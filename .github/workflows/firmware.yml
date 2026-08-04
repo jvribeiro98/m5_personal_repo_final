@@ -1,0 +1,68 @@
+name: Build e publicar firmware
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: arduino/setup-arduino-cli@v2
+      - name: Instalar ESP32 e bibliotecas
+        run: |
+          arduino-cli config init
+          arduino-cli core update-index --additional-urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          arduino-cli core install esp32:esp32@3.3.8 --additional-urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          arduino-cli lib update-index
+          arduino-cli lib install "M5Unified"
+          arduino-cli lib install "IRremoteESP8266"
+      - name: Compilar
+        run: |
+          mkdir -p .build/sketch .build/output
+          cp firmware/m5_personal.ino .build/sketch/m5_personal.ino
+          arduino-cli compile --fqbn esp32:esp32:esp32 --build-path .build/output .build/sketch
+      - name: Gerar binário único
+        run: |
+          python3 -m pip install --disable-pip-version-check esptool==4.8.1
+          python3 -m esptool --chip esp32 merge_bin -o web/firmware.bin \
+            --flash_mode dio --flash_freq 80m --flash_size 4MB \
+            0x1000 .build/output/m5_personal.ino.bootloader.bin \
+            0x8000 .build/output/m5_personal.ino.partitions.bin \
+            0xe000 .build/output/boot_app0.bin \
+            0x10000 .build/output/m5_personal.ino.bin
+      - name: Atualizar versão do manifesto
+        env:
+          VERSION: ${{ github.sha }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          p='web/manifest.json'
+          d=json.load(open(p, encoding='utf-8'))
+          d['version']=os.environ['VERSION'][:7]
+          open(p,'w',encoding='utf-8').write(json.dumps(d,ensure_ascii=False,indent=2)+'\n')
+          PY
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

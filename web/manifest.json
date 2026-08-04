@@ -1,0 +1,9 @@
+{
+  "name": "M5 Personal",
+  "version": "automatic",
+  "new_install_prompt_erase": true,
+  "builds": [{
+    "chipFamily": "ESP32",
+    "parts": [{ "path": "firmware.bin", "offset": 0 }]
+  }]
+}
