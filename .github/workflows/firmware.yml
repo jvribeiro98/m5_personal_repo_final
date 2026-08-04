@@ -26,14 +26,6 @@ jobs:
       - name: Baixar repositório
         uses: actions/checkout@v4
 
-      - name: Validar firmware fonte
-        run: |
-          test -s firmware/m5_personal.ino
-          test "$(wc -c < firmware/m5_personal.ino)" -gt 50000
-          ! grep -q '^PLACEHOLDER$' firmware/m5_personal.ino
-          grep -q '#include <M5Unified.h>' firmware/m5_personal.ino
-          echo "Firmware fonte: $(wc -c < firmware/m5_personal.ino) bytes"
-
       - name: Instalar Arduino CLI
         uses: arduino/setup-arduino-cli@v2
 
@@ -48,6 +40,15 @@ jobs:
           arduino-cli lib install "M5Unified"
           arduino-cli lib install "IRremoteESP8266"
 
+      - name: Validar firmware fonte
+        run: |
+          test -s firmware/m5_personal.ino
+          test "$(wc -c < firmware/m5_personal.ino)" -gt 50000
+          ! grep -q '^PLACEHOLDER$' firmware/m5_personal.ino
+          grep -q '#include <M5Unified.h>' firmware/m5_personal.ino
+          grep -q '#include <IRremoteESP8266.h>' firmware/m5_personal.ino
+          echo "Firmware fonte: $(wc -c < firmware/m5_personal.ino) bytes"
+
       - name: Preparar sketch Arduino
         run: |
           rm -rf .build
@@ -59,33 +60,25 @@ jobs:
           arduino-cli compile \
             --fqbn esp32:esp32:esp32 \
             --build-path "$GITHUB_WORKSPACE/.build/output" \
+            --export-binaries \
             "$GITHUB_WORKSPACE/.build/m5_personal"
 
-      - name: Gerar firmware único
+      - name: Preparar firmware único
         run: |
-          python3 -m pip install --disable-pip-version-check esptool==4.8.1
+          echo "Arquivos gerados pelo compilador:"
+          find .build -maxdepth 3 -type f -printf '%p %s bytes\n' | sort
 
-          APP_BIN="$(find .build/output -maxdepth 1 -name 'm5_personal.ino.bin' -print -quit)"
-          BOOTLOADER_BIN="$(find .build/output -maxdepth 1 -name 'm5_personal.ino.bootloader.bin' -print -quit)"
-          PARTITIONS_BIN="$(find .build/output -maxdepth 1 -name 'm5_personal.ino.partitions.bin' -print -quit)"
-          BOOT_APP0_BIN="$(find .build/output -maxdepth 1 -name 'boot_app0.bin' -print -quit)"
+          MERGED_BIN="$(find .build -type f -name '*.merged.bin' -print -quit)"
 
-          test -s "$APP_BIN"
-          test -s "$BOOTLOADER_BIN"
-          test -s "$PARTITIONS_BIN"
-          test -s "$BOOT_APP0_BIN"
+          if [ -z "$MERGED_BIN" ]; then
+            echo "ERRO: o ESP32 Core não gerou o arquivo .merged.bin"
+            exit 1
+          fi
 
-          python3 -m esptool \
-            --chip esp32 \
-            merge_bin \
-            -o web/firmware.bin \
-            --flash_mode dio \
-            --flash_freq 80m \
-            --flash_size 4MB \
-            0x1000 "$BOOTLOADER_BIN" \
-            0x8000 "$PARTITIONS_BIN" \
-            0xe000 "$BOOT_APP0_BIN" \
-            0x10000 "$APP_BIN"
+          test -s "$MERGED_BIN"
+          cp "$MERGED_BIN" web/firmware.bin
+          echo "Firmware web criado de: $MERGED_BIN"
+          ls -lh web/firmware.bin
 
       - name: Atualizar versão publicada
         env:
