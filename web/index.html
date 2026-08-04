@@ -1,1 +1,55 @@
-<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#0b1020"><title>M5 Personal — Instalar firmware</title><script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js"></script><style>:root{color-scheme:dark;font-family:system-ui,sans-serif}body{margin:0;min-height:100vh;display:grid;place-items:center;background:#080b12;color:#f8fafc}main{width:min(92vw,540px);padding:30px;border:1px solid #283247;border-radius:20px;background:#111827}h1{margin:0 0 8px}p,li{color:#cbd5e1;line-height:1.5}button{width:100%;padding:16px;border:0;border-radius:12px;font-weight:800;font-size:1rem;background:#22c55e;color:#052e16;cursor:pointer}.meta{margin-top:18px;font-size:.88rem;color:#94a3b8}</style></head><body><main><h1>M5 Personal</h1><p>Grave a versão mais recente no M5StickC Plus 2 sem Arduino IDE.</p><ol><li>Use Chrome ou Edge no computador.</li><li>Conecte o M5 pelo USB.</li><li>Clique em <strong>Conectar e instalar</strong>.</li></ol><esp-web-install-button manifest="manifest.json"><button slot="activate">Conectar e instalar</button><span slot="unsupported">Este navegador não suporta gravação serial. Use Chrome ou Edge.</span></esp-web-install-button><div class="meta">O firmware é compilado automaticamente a partir da branch main.</div></main></body></html>
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b1020">
+  <title>M5 Personal — Instalar firmware</title>
+  <script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js"></script>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #080b12; color: #f8fafc; }
+    main { width: min(92vw, 540px); padding: 30px; border: 1px solid #283247; border-radius: 20px; background: #111827; box-shadow: 0 24px 70px #0008; }
+    h1 { margin: 0 0 8px; }
+    p, li { color: #cbd5e1; line-height: 1.5; }
+    button { width: 100%; padding: 16px; border: 0; border-radius: 12px; font-weight: 800; font-size: 1rem; background: #22c55e; color: #052e16; cursor: pointer; }
+    .meta { margin-top: 18px; font-size: .88rem; color: #94a3b8; }
+    .version { color: #facc15; font-weight: 700; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>M5 Personal</h1>
+    <p>Grave a versão mais recente no M5StickC Plus 2 sem Arduino IDE.</p>
+    <ol>
+      <li>Use Chrome ou Edge no computador.</li>
+      <li>Conecte o M5 por um cabo USB com dados.</li>
+      <li>Clique em <strong>Conectar e instalar</strong>.</li>
+    </ol>
+
+    <esp-web-install-button manifest="manifest.json">
+      <button slot="activate">Conectar e instalar</button>
+      <span slot="unsupported">Este navegador não suporta gravação serial. Use Chrome ou Edge.</span>
+    </esp-web-install-button>
+
+    <div class="meta">
+      Versão publicada: <span id="version" class="version">carregando…</span><br>
+      Firmware compilado automaticamente a partir da branch <code>main</code>.
+    </div>
+  </main>
+
+  <script>
+    fetch(`version.json?${Date.now()}`, { cache: "no-store" })
+      .then((response) => {
+        if (!response.ok) throw new Error("version.json indisponível");
+        return response.json();
+      })
+      .then((data) => {
+        document.getElementById("version").textContent = data.version || "desconhecida";
+      })
+      .catch(() => {
+        document.getElementById("version").textContent = "aguardando primeiro build";
+      });
+  </script>
+</body>
+</html>
