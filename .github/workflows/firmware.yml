@@ -55,6 +55,73 @@ jobs:
           mkdir -p .build/m5_personal .build/output
           cp firmware/m5_personal.ino .build/m5_personal/m5_personal.ino
 
+      - name: Aplicar correção de display ao binário publicado
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          sketch = Path('.build/m5_personal/m5_personal.ino')
+          source = sketch.read_text(encoding='utf-8')
+
+          old_redraw = '''  if (screen == Screen::WIFI_SCANNING ||
+              screen == Screen::WIFI_CONNECTING ||
+              screen == Screen::MAIN ||
+              screen == Screen::WIFI_MENU ||
+              screen == Screen::WIFI_NETWORKS ||
+              screen == Screen::WIFI_SAVED_LIST ||
+              screen == Screen::WIFI_SAVED_DETAIL ||
+              screen == Screen::IR_TYPES ||
+              screen == Screen::TV_LIST ||
+              screen == Screen::AC_LIST) {
+            redraw = true;
+          }'''
+
+          new_redraw = '''  // Somente telas realmente animadas redesenham continuamente.
+          if (screen == Screen::WIFI_SCANNING ||
+              screen == Screen::WIFI_CONNECTING) {
+            redraw = true;
+          }'''
+
+          if old_redraw not in source:
+              raise SystemExit('ERRO: bloco de redesenho contínuo não encontrado')
+          source = source.replace(old_redraw, new_redraw, 1)
+
+          old_draw = '''  if (redraw) {
+            drawScreen();
+          }'''
+          new_draw = '''  if (redraw) {
+            M5.Display.startWrite();
+            drawScreen();
+            M5.Display.endWrite();
+          }'''
+
+          if old_draw not in source:
+              raise SystemExit('ERRO: chamada drawScreen não encontrada')
+          source = source.replace(old_draw, new_draw, 1)
+
+          # A rolagem horizontal dependia de redesenhar a tela inteira continuamente.
+          source = source.replace(
+              'if (active && textWidth > labelWidth) {',
+              'if (false && active && textWidth > labelWidth) {',
+              1,
+          )
+
+          source = source.replace(
+              'M5 PERSONAL v0.8 - IR + CHECKPOINT 1 iniciado.',
+              'M5 PERSONAL v0.8.2 - DISPLAY FIX PUBLICADO.',
+              1,
+          )
+
+          sketch.write_text(source, encoding='utf-8')
+          print('Correção aplicada diretamente ao sketch que será compilado')
+          PY
+
+      - name: Validar correção de display aplicada
+        run: |
+          ! grep -q 'screen == Screen::MAIN ||' .build/m5_personal/m5_personal.ino
+          grep -q 'M5.Display.startWrite();' .build/m5_personal/m5_personal.ino
+          grep -q 'DISPLAY FIX PUBLICADO' .build/m5_personal/m5_personal.ino
+
       - name: Compilar firmware
         run: |
           arduino-cli compile \
