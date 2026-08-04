@@ -3,6 +3,10 @@ name: Build e publicar firmware
 on:
   push:
     branches: [main]
+    paths:
+      - "firmware/**"
+      - "web/**"
+      - ".github/workflows/firmware.yml"
   workflow_dispatch:
 
 permissions:
@@ -17,52 +21,130 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: arduino/setup-arduino-cli@v2
+      - name: Baixar repositório
+        uses: actions/checkout@v4
+
+      - name: Instalar Arduino CLI
+        uses: arduino/setup-arduino-cli@v2
+
       - name: Instalar ESP32 e bibliotecas
         run: |
           arduino-cli config init
-          arduino-cli core update-index --additional-urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
-          arduino-cli core install esp32:esp32@3.3.8 --additional-urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          arduino-cli core update-index \
+            --additional-urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          arduino-cli core install esp32:esp32@3.3.8 \
+            --additional-urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
           arduino-cli lib update-index
           arduino-cli lib install "M5Unified"
           arduino-cli lib install "IRremoteESP8266"
-      - name: Compilar
+
+      - name: Preparar sketch Arduino
         run: |
-          mkdir -p .build/sketch .build/output
-          cp firmware/m5_personal.ino .build/sketch/m5_personal.ino
-          arduino-cli compile --fqbn esp32:esp32:esp32 --build-path .build/output .build/sketch
-      - name: Gerar binário único
+          mkdir -p .build/m5_personal .build/output
+          cp firmware/m5_personal.ino .build/m5_personal/m5_personal.ino
+
+      - name: Compilar firmware
+        run: |
+          arduino-cli compile \
+            --fqbn esp32:esp32:esp32 \
+            --build-path "$GITHUB_WORKSPACE/.build/output" \
+            "$GITHUB_WORKSPACE/.build/m5_personal"
+
+      - name: Gerar firmware único
         run: |
           python3 -m pip install --disable-pip-version-check esptool==4.8.1
-          python3 -m esptool --chip esp32 merge_bin -o web/firmware.bin \
-            --flash_mode dio --flash_freq 80m --flash_size 4MB \
-            0x1000 .build/output/m5_personal.ino.bootloader.bin \
-            0x8000 .build/output/m5_personal.ino.partitions.bin \
-            0xe000 .build/output/boot_app0.bin \
-            0x10000 .build/output/m5_personal.ino.bin
-      - name: Atualizar versão do manifesto
+
+          APP_BIN="$(find .build/output -maxdepth 1 -name 'm5_personal.ino.bin' -print -quit)"
+          BOOTLOADER_BIN="$(find .build/output -maxdepth 1 -name 'm5_personal.ino.bootloader.bin' -print -quit)"
+          PARTITIONS_BIN="$(find .build/output -maxdepth 1 -name 'm5_personal.ino.partitions.bin' -print -quit)"
+          BOOT_APP0_BIN="$(find .build/output -maxdepth 1 -name 'boot_app0.bin' -print -quit)"
+
+          test -s "$APP_BIN"
+          test -s "$BOOTLOADER_BIN"
+          test -s "$PARTITIONS_BIN"
+          test -s "$BOOT_APP0_BIN"
+
+          python3 -m esptool \
+            --chip esp32 \
+            merge_bin \
+            -o web/firmware.bin \
+            --flash_mode dio \
+            --flash_freq 80m \
+            --flash_size 4MB \
+            0x1000 "$BOOTLOADER_BIN" \
+            0x8000 "$PARTITIONS_BIN" \
+            0xe000 "$BOOT_APP0_BIN" \
+            0x10000 "$APP_BIN"
+
+      - name: Atualizar versão publicada
         env:
           VERSION: ${{ github.sha }}
+          BUILD_DATE: ${{ github.event.head_commit.timestamp }}
         run: |
           python3 - <<'PY'
-          import json, os
-          p='web/manifest.json'
-          d=json.load(open(p, encoding='utf-8'))
-          d['version']=os.environ['VERSION'][:7]
-          open(p,'w',encoding='utf-8').write(json.dumps(d,ensure_ascii=False,indent=2)+'\n')
+          import json
+          import os
+          from pathlib import Path
+
+          manifest_path = Path("web/manifest.json")
+          manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+          manifest["version"] = os.environ["VERSION"][:7]
+          manifest_path.write_text(
+              json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+              encoding="utf-8",
+          )
+
+          Path("web/version.json").write_text(
+              json.dumps(
+                  {
+                      "version": os.environ["VERSION"][:7],
+                      "commit": os.environ["VERSION"],
+                      "built_at": os.environ.get("BUILD_DATE") or "manual",
+                  },
+                  ensure_ascii=False,
+                  indent=2,
+              ) + "\n",
+              encoding="utf-8",
+          )
           PY
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
+
+      - name: Validar publicação
+        run: |
+          test -s web/index.html
+          test -s web/manifest.json
+          test -s web/version.json
+          test -s web/firmware.bin
+          ls -lh web/firmware.bin
+
+      - name: Salvar firmware como artefato
+        uses: actions/upload-artifact@v4
+        with:
+          name: m5-personal-${{ github.sha }}
+          path: |
+            web/firmware.bin
+            web/manifest.json
+            web/version.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Configurar GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Preparar conteúdo do site
+        uses: actions/upload-pages-artifact@v3
         with:
           path: web
+
   deploy:
     needs: build
     runs-on: ubuntu-latest
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
+
     steps:
-      - id: deployment
+      - name: Publicar GitHub Pages
+        id: deployment
         uses: actions/deploy-pages@v4
