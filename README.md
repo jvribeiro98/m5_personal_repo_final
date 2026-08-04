@@ -1,6 +1,6 @@
 # M5 Personal
 
-Firmware pessoal para **M5StickC Plus 2**, organizado em módulos e com interface local no display e Web UI pela rede.
+Firmware pessoal para **M5StickC Plus 2**, com interface local no display, controles infravermelhos e configuração pela rede.
 
 ## Estado atual
 
@@ -11,13 +11,14 @@ Já implementado:
 - menu principal modular;
 - controles infravermelhos para TVs Samsung e LG;
 - controles de ar-condicionado Samsung e Midea;
-- gerenciamento de Wi‑Fi no próprio M5;
+- gerenciamento de Wi-Fi no próprio M5;
 - configuração por ponto de acesso temporário;
 - Web UI na rede local;
 - até 10 redes salvas com estado e diagnóstico;
 - reconexão automática sem bloquear o firmware;
-- persistência de configurações em Preferences/NVS;
-- compilação automática no GitHub;
+- persistência em Preferences/NVS;
+- compilação automática no GitHub Actions;
+- geração de um `firmware.bin` consolidado;
 - gravação pelo navegador com ESP Web Tools.
 
 O comportamento congelado desta versão está documentado em [CHECKPOINT_1.md](CHECKPOINT_1.md).
@@ -34,7 +35,7 @@ O comportamento congelado desta versão está documentado em [CHECKPOINT_1.md](C
 ```text
 firmware/m5_personal.ino   firmware principal
 web/                      página de instalação pelo navegador
-.github/workflows/         build e publicação automática
+.github/workflows/         compilação e publicação automática
 CHECKPOINT_1.md            regras funcionais do Check-point 1
 ```
 
@@ -43,46 +44,50 @@ CHECKPOINT_1.md            regras funcionais do Check-point 1
 - ESP32 Arduino Core 3.3.8
 - M5Unified
 - IRremoteESP8266
-- WiFi, WebServer e Preferences do core ESP32
+- WiFi, WebServer e Preferences incluídos no core ESP32
 
-## Compilação automática
+## Fluxo automático
 
-Todo push na branch `main` executa o workflow:
+Todo push na branch `main` que altere o firmware, a página ou o workflow executa:
 
-1. instala o Arduino CLI;
-2. instala o core ESP32 e as bibliotecas;
-3. compila `firmware/m5_personal.ino`;
-4. gera um `firmware.bin` consolidado;
-5. publica a página de instalação no GitHub Pages.
+1. instalação do Arduino CLI;
+2. instalação do core ESP32 e bibliotecas;
+3. compilação de `firmware/m5_personal.ino`;
+4. consolidação do bootloader, partições e aplicação em `firmware.bin`;
+5. atualização automática da versão pelo hash do commit;
+6. armazenamento do binário como artefato do GitHub Actions;
+7. publicação da página no GitHub Pages.
 
-## Gravar sem Arduino IDE
+## Flash pelo navegador
 
-Abra no Chrome ou Edge:
+Página do instalador:
 
 ```text
-https://jvribeiro98.github.io/m5stickCplus2_ar_condicionado/
+https://jvribeiro98.github.io/m5_personal_repo_final/
 ```
 
-Depois:
+Uso:
 
-1. conecte o M5StickC Plus 2 pelo USB;
-2. clique em **Conectar e instalar**;
-3. selecione a porta serial;
-4. confirme a gravação.
+1. abra a página no Chrome ou Edge em um computador;
+2. conecte o M5StickC Plus 2 por um cabo USB com dados;
+3. clique em **Conectar e instalar**;
+4. selecione a porta serial do M5;
+5. confirme a instalação.
+
+O manifesto e o binário publicados sempre pertencem ao último build bem-sucedido da branch `main`.
 
 ## Desenvolvimento
-
-Fluxo esperado:
 
 ```text
 alterar firmware → commit/push → GitHub compila → abrir página → instalar
 ```
 
-Nenhuma função deve entrar como protótipo silencioso. Comportamentos e mapeamentos não confirmados precisam ser definidos antes de integrar uma versão destinada à gravação.
+O workflow também disponibiliza o `firmware.bin` em **Actions → execução do build → Artifacts** por 30 dias.
 
 ## Próximos passos
 
 - validar o controle TCL;
-- ampliar os módulos sem quebrar as regras do Check-point 1;
+- ampliar os módulos sem quebrar o Check-point 1;
 - versionar novos checkpoints funcionais;
-- melhorar diagnóstico e atualização do firmware mantendo o fluxo simples.
+- adicionar atualização OTA quando o fluxo atual estiver validado;
+- melhorar diagnóstico e recuperação sem aumentar a complexidade de uso.
