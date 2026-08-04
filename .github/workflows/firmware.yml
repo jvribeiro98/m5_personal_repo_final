@@ -45,6 +45,41 @@ jobs:
           mkdir -p .build/m5_personal .build/output
           cp firmware/m5_personal.ino .build/m5_personal/m5_personal.ino
 
+      - name: Corrigir atualização das telas estáticas
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          sketch = Path(".build/m5_personal/m5_personal.ino")
+          source = sketch.read_text(encoding="utf-8")
+
+          old = '''  if (screen == Screen::WIFI_SCANNING ||
+              screen == Screen::WIFI_CONNECTING ||
+              screen == Screen::MAIN ||
+              screen == Screen::WIFI_MENU ||
+              screen == Screen::WIFI_NETWORKS ||
+              screen == Screen::WIFI_SAVED_LIST ||
+              screen == Screen::WIFI_SAVED_DETAIL ||
+              screen == Screen::IR_TYPES ||
+              screen == Screen::TV_LIST ||
+              screen == Screen::AC_LIST) {
+            redraw = true;
+          }'''
+
+          new = '''  // Apenas telas realmente animadas são redesenhadas continuamente.
+          // Menus estáticos redesenham somente quando há mudança de estado/seleção,
+          // evitando faixas, cintilação e tearing no display do M5StickC Plus 2.
+          if (screen == Screen::WIFI_SCANNING ||
+              screen == Screen::WIFI_CONNECTING) {
+            redraw = true;
+          }'''
+
+          if old not in source:
+              raise SystemExit("Bloco de redesenho contínuo não encontrado no firmware")
+
+          sketch.write_text(source.replace(old, new, 1), encoding="utf-8")
+          PY
+
       - name: Compilar firmware
         run: |
           arduino-cli compile \
