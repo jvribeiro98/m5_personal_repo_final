@@ -1,0 +1,70 @@
+name: Aplicar correção de display uma vez
+
+on:
+  push:
+    branches:
+      - fix/display-flicker-v0.8.2
+    paths:
+      - .github/workflows/apply-display-fix-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/display-flicker-v0.8.2
+          fetch-depth: 0
+
+      - name: Corrigir redesenho contínuo dos menus
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('firmware/m5_personal.ino')
+          source = path.read_text(encoding='utf-8')
+
+          old = '''  if (screen == Screen::WIFI_SCANNING ||
+              screen == Screen::WIFI_CONNECTING ||
+              screen == Screen::MAIN ||
+              screen == Screen::WIFI_MENU ||
+              screen == Screen::WIFI_NETWORKS ||
+              screen == Screen::WIFI_SAVED_LIST ||
+              screen == Screen::WIFI_SAVED_DETAIL ||
+              screen == Screen::IR_TYPES ||
+              screen == Screen::TV_LIST ||
+              screen == Screen::AC_LIST) {
+            redraw = true;
+          }'''
+
+          new = '''  // Apenas telas com animação/progresso precisam de atualização contínua.
+          // Menus estáticos são redesenhados somente quando seleção, estado ou toast mudam.
+          // Redesenhar a tela inteira a cada 10 ms causava cintilação e listras no LCD.
+          if (screen == Screen::WIFI_SCANNING ||
+              screen == Screen::WIFI_CONNECTING) {
+            redraw = true;
+          }'''
+
+          if old not in source:
+              raise SystemExit('Bloco esperado não encontrado; nenhuma alteração aplicada.')
+
+          source = source.replace(old, new, 1)
+          source = source.replace(
+              'M5 PERSONAL v0.8 - IR + CHECKPOINT 1 iniciado.',
+              'M5 PERSONAL v0.8.2 - DISPLAY FIX iniciado.',
+              1,
+          )
+          path.write_text(source, encoding='utf-8')
+          PY
+
+      - name: Remover job descartável e commitar
+        run: |
+          rm .github/workflows/apply-display-fix-once.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add firmware/m5_personal.ino .github/workflows/apply-display-fix-once.yml
+          git commit -m "fix: eliminar cintilação dos menus do display"
+          git push origin HEAD:fix/display-flicker-v0.8.2
