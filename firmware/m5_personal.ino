@@ -8,7 +8,7 @@
 #include <WebServer.h>
 
 // ============================================================
-// M5 PERSONAL - MODULO IR v0.3 CORRIGIDO
+// M5 PERSONAL v0.9 - IR + WIFI RUNTIME FIX
 // Hardware: M5StickC Plus2
 // IR interno: GPIO 19
 // Orientacao: rotation 3 (emissor IR fisicamente para cima)
@@ -238,6 +238,12 @@ String pendingWebOriginalPassword;
 
 uint32_t wifiConnectStartedAt = 0;
 uint32_t wifiLastRetryScanAt = 0;
+uint8_t wifiReconnectCursor = 0;
+bool webUiSyncPending = false;
+uint32_t webUiSyncAt = 0;
+bool webServerStopPending = false;
+uint32_t webServerStopAt = 0;
+uint32_t lastUiRefreshAt = 0;
 
 IRsend tvIr(IR_PIN);
 IRSamsungAc samsungAc(IR_PIN);
@@ -527,6 +533,9 @@ String prefKey(uint8_t device, const char* suffix) {
 void saveAcState(uint8_t index) {
   if (index >= AC_COUNT) return;
 
+  // Cada operação abre e fecha seu próprio namespace NVS.
+  // O objeto Preferences também é usado pelo módulo Wi-Fi.
+  prefs.begin("m5-ir", false);
   const AcState& state = airConditioners[index].state;
   prefs.putBool(prefKey(index, "p").c_str(), state.power);
   prefs.putUChar(prefKey(index, "t").c_str(), state.temp);
@@ -535,10 +544,11 @@ void saveAcState(uint8_t index) {
   prefs.putBool(prefKey(index, "s").c_str(), state.swing);
   prefs.putBool(prefKey(index, "u").c_str(), state.turbo);
   prefs.putUShort(prefKey(index, "z").c_str(), state.sleepMinutes);
+  prefs.end();
 }
 
 void loadAcStates() {
-  prefs.begin("m5-ir", false);
+  prefs.begin("m5-ir", true);
 
   for (uint8_t i = 0; i < AC_COUNT; i++) {
     AcState& state = airConditioners[i].state;
@@ -551,15 +561,15 @@ void loadAcStates() {
     state.sleepMinutes = prefs.getUShort(prefKey(i, "z").c_str(), 0);
 
     if (state.temp < 16 || state.temp > 30) state.temp = 23;
-
     if (static_cast<uint8_t>(state.mode) > static_cast<uint8_t>(AcMode::HEAT)) {
       state.mode = AcMode::COOL;
     }
-
     if (static_cast<uint8_t>(state.fan) > static_cast<uint8_t>(AcFan::HIGH_SPEED)) {
       state.fan = AcFan::AUTO;
     }
   }
+
+  prefs.end();
 }
 
 uint8_t samsungMode(AcMode mode) {
@@ -902,7 +912,7 @@ void deleteSavedNetwork(uint8_t index) {
   saveSavedNetworks();
 
   if (deletingCurrent) {
-    WiFi.disconnect(true, false);
+    WiFi.disconnect(false, false);
     wifiAutoScanPending = true;
   }
 }
@@ -1046,15 +1056,28 @@ void processWifiConnection() {
     wifiConnecting = true;
     wifiConnectStartedAt = millis();
 
+    const bool background =
+        wifiConnectSource == WifiConnectSource::AUTO_BOOT ||
+        wifiConnectSource == WifiConnectSource::AUTO_RECONNECT;
+
+    // Limpa somente a associação STA anterior. Não derruba o AP de setup.
+    WiFi.disconnect(false, false);
     if (webUiMode == WebUiMode::SETUP_AP) WiFi.mode(WIFI_AP_STA);
     else WiFi.mode(WIFI_STA);
+    delay(20);
 
     WiFi.begin(wifiPendingSsid.c_str(), wifiPendingPassword.c_str());
-    screen = Screen::WIFI_CONNECTING;
-    redraw = true;
+    if (!background) {
+      screen = Screen::WIFI_CONNECTING;
+      redraw = true;
+    }
   }
 
   if (!wifiConnecting) return;
+
+  const bool background =
+      wifiConnectSource == WifiConnectSource::AUTO_BOOT ||
+      wifiConnectSource == WifiConnectSource::AUTO_RECONNECT;
 
   if (WiFi.status() == WL_CONNECTED) {
     wifiConnecting = false;
@@ -1094,24 +1117,33 @@ void processWifiConnection() {
       saveWebUiPreference();
     }
 
+    // Ao sair do AP, encerra o listener antigo e só sobe a Web UI
+    // na interface STA depois que a pilha de rede estabilizar.
     stopSetupAccessPoint();
-    syncWebUiState();
+    webUiSyncPending = true;
+    webUiSyncAt = millis() + 300;
 
     if (!savedOk) showToast("LIMITE DE 10 REDES", 1800);
 
-    screen = Screen::WIFI_RESULT;
+    if (background) {
+      showToast("WIFI CONECTADO", 900);
+    } else {
+      screen = Screen::WIFI_RESULT;
+    }
     redraw = true;
     return;
   }
 
-  if (millis() - wifiConnectStartedAt >= WIFI_CONNECT_TIMEOUT_MS) {
+  const uint32_t timeoutMs = background ? 8000 : WIFI_CONNECT_TIMEOUT_MS;
+  if (millis() - wifiConnectStartedAt >= timeoutMs) {
     wifiConnecting = false;
 
     const wl_status_t finalStatus = WiFi.status();
-    const bool networkWasVisible = findSavedNetwork(wifiPendingSsid) >= 0 ||
-                                   wifiConnectSource == WifiConnectSource::EDIT_VERIFY ||
-                                   wifiConnectSource == WifiConnectSource::WEB_SETUP ||
-                                   wifiConnectSource == WifiConnectSource::PHYSICAL;
+    const bool networkWasVisible = !background && (
+        findSavedNetwork(wifiPendingSsid) >= 0 ||
+        wifiConnectSource == WifiConnectSource::EDIT_VERIFY ||
+        wifiConnectSource == WifiConnectSource::WEB_SETUP ||
+        wifiConnectSource == WifiConnectSource::PHYSICAL);
 
     SavedNetworkFailure failure = SavedNetworkFailure::UNKNOWN;
     if (finalStatus == WL_CONNECT_FAILED) failure = SavedNetworkFailure::AUTH_REJECTED;
@@ -1120,66 +1152,77 @@ void processWifiConnection() {
 
     WiFi.disconnect(false, false);
 
-    // Ausência no scan / fora de alcance não vira alerta.
     if (networkWasVisible && failure != SavedNetworkFailure::NONE) {
       markSavedNetworkFailure(wifiPendingSsid, failure);
     }
 
-    wifiResultTitle = "FALHA";
-    wifiResultDetail = failure == SavedNetworkFailure::NONE ? "REDE INDISPONIVEL" : "VERIFIQUE A REDE";
     wifiEditingSavedIndex = -1;
     pendingWebEdit = false;
     pendingWebEditIndex = -1;
-    screen = Screen::WIFI_RESULT;
+
+    if (background) {
+      wifiLastRetryScanAt = millis();
+    } else {
+      wifiResultTitle = "FALHA";
+      wifiResultDetail = failure == SavedNetworkFailure::NONE
+          ? "REDE INDISPONIVEL" : "VERIFIQUE A REDE";
+      screen = Screen::WIFI_RESULT;
+    }
     redraw = true;
   }
 }
 
-
 void tryAutoConnectStrongest() {
-  if (!savedNetworkCount || wifiConnecting || WiFi.status() == WL_CONNECTED) return;
+  if (!savedNetworkCount || wifiConnecting || wifiConnectPending ||
+      WiFi.status() == WL_CONNECTED) return;
 
-  WiFi.mode(WIFI_STA);
-  int found = WiFi.scanNetworks(false, true);
+  // Reconexão em background sem scan síncrono: evita congelar a UI.
+  // As redes são tentadas em rodízio; o scan continua disponível
+  // somente quando o usuário pede explicitamente.
+  for (uint8_t attempt = 0; attempt < savedNetworkCount; attempt++) {
+    const uint8_t index = wifiReconnectCursor % savedNetworkCount;
+    wifiReconnectCursor = (wifiReconnectCursor + 1) % savedNetworkCount;
+    if (!savedNetworks[index].ssid.length()) continue;
 
-  int8_t bestSaved = -1;
-  int32_t bestRssi = -1000;
-
-  if (found > 0) {
-    for (int i = 0; i < found; i++) {
-      int8_t saved = findSavedNetwork(WiFi.SSID(i));
-      if (saved >= 0 && WiFi.RSSI(i) > bestRssi) {
-        bestRssi = WiFi.RSSI(i);
-        bestSaved = saved;
-      }
-    }
-  }
-
-  WiFi.scanDelete();
-
-  if (bestSaved >= 0) {
     beginWifiConnection(
-      savedNetworks[bestSaved].ssid,
-      savedNetworks[bestSaved].password,
+      savedNetworks[index].ssid,
+      savedNetworks[index].password,
       WifiConnectSource::AUTO_RECONNECT
     );
+    return;
   }
 }
 
 void processWifiMaintenance() {
-  if (wifiAutoScanPending && !wifiConnecting) {
+  const uint32_t now = millis();
+
+  if (webServerStopPending && static_cast<int32_t>(now - webServerStopAt) >= 0) {
+    webServerStopPending = false;
+    stopLanWebUi();
+  }
+
+  if (webUiSyncPending && static_cast<int32_t>(now - webUiSyncAt) >= 0) {
+    webUiSyncPending = false;
+    syncWebUiState();
+  }
+
+  if (wifiAutoScanPending && !wifiConnecting && !wifiConnectPending) {
     wifiAutoScanPending = false;
     tryAutoConnectStrongest();
-    wifiLastRetryScanAt = millis();
+    wifiLastRetryScanAt = now;
   }
 
-  if (WiFi.status() != WL_CONNECTED && !wifiConnecting &&
-      millis() - wifiLastRetryScanAt >= WIFI_RETRY_SCAN_MS) {
-    wifiLastRetryScanAt = millis();
+  if (WiFi.status() != WL_CONNECTED && !wifiConnecting && !wifiConnectPending &&
+      now - wifiLastRetryScanAt >= WIFI_RETRY_SCAN_MS) {
+    wifiLastRetryScanAt = now;
     tryAutoConnectStrongest();
   }
 
-  syncWebUiState();
+  // syncWebUiState é idempotente após o fix, mas durante um desligamento
+  // adiado não pode encerrar o socket antes da resposta HTTP sair.
+  if (!webServerStopPending && !webUiSyncPending) {
+    syncWebUiState();
+  }
 }
 
 String htmlEscape(String value) {
@@ -1443,8 +1486,18 @@ void handleWebApiWebUiToggle() {
 
   lanWebUiDesired = !lanWebUiDesired;
   saveWebUiPreference();
-  syncWebUiState();
-  sendJson(true, lanWebUiDesired ? "Web UI ativada" : "Web UI desativada");
+  const bool enabling = lanWebUiDesired;
+
+  // Primeiro responde ao navegador; só depois altera o listener.
+  sendJson(true, enabling ? "Web UI ativada" : "Web UI desativada");
+
+  if (enabling) {
+    webUiSyncPending = true;
+    webUiSyncAt = millis() + 50;
+  } else {
+    webServerStopPending = true;
+    webServerStopAt = millis() + 300;
+  }
 }
 
 void handleWebApiTv() {
@@ -1669,35 +1722,50 @@ void startSetupAccessPoint() {
 void stopSetupAccessPoint() {
   if (webUiMode != WebUiMode::SETUP_AP) return;
 
-  WiFi.softAPdisconnect(true);
-  if (WiFi.status() == WL_CONNECTED) WiFi.mode(WIFI_STA);
-  webUiMode = WebUiMode::OFF;
-
-  if (!lanWebUiDesired) {
+  // O servidor que atendia o AP é encerrado antes da troca de interface.
+  if (webServerRunning) {
     webServer.stop();
     webServerRunning = false;
+  }
+
+  WiFi.softAPdisconnect(true);
+  WiFi.mode(WIFI_STA);
+  webUiMode = WebUiMode::OFF;
+  webServerStopPending = false;
+
+  if (lanWebUiDesired && WiFi.status() == WL_CONNECTED) {
+    webUiSyncPending = true;
+    webUiSyncAt = millis() + 300;
   }
 }
 
 void startLanWebUi() {
   if (WiFi.status() != WL_CONNECTED) return;
+  if (webUiMode == WebUiMode::LAN && webServerRunning) return;
+
   webUiMode = WebUiMode::LAN;
   startWebServerIfNeeded();
 }
 
 void stopLanWebUi() {
   if (webUiMode == WebUiMode::SETUP_AP) return;
+
+  if (webServerRunning) {
+    webServer.stop();
+    webServerRunning = false;
+  }
   webUiMode = WebUiMode::OFF;
-  webServer.stop();
-  webServerRunning = false;
 }
 
 void syncWebUiState() {
   if (webUiMode == WebUiMode::SETUP_AP) return;
 
-  if (lanWebUiDesired && WiFi.status() == WL_CONNECTED) {
-    startLanWebUi();
-  } else {
+  const bool shouldRun = lanWebUiDesired && WiFi.status() == WL_CONNECTED;
+  if (shouldRun) {
+    if (webUiMode != WebUiMode::LAN || !webServerRunning) {
+      startLanWebUi();
+    }
+  } else if (webUiMode == WebUiMode::LAN || webServerRunning) {
     stopLanWebUi();
   }
 }
@@ -1730,8 +1798,10 @@ String wifiKeyboard(const String& title, const String& initial, bool masked, boo
   cancelled = false;
 
   while (true) {
-    M5.update();
-    buttonC.update();
+  // O teclado é modal, mas não deixa a Web UI morrer enquanto está aberto.
+  if (webServerRunning) webServer.handleClient();
+  M5.update();
+  buttonC.update();
 
     if (redrawKeyboard) {
       redrawKeyboard = false;
@@ -1945,7 +2015,7 @@ void drawGridButton(uint8_t index, int x, int y, int w, int h,
 }
 
 void drawMain() {
-  drawTitle("M5 PERSONAL", "v0.8");
+  drawTitle("M5 PERSONAL", "v0.9");
   drawListItem(0, 44, "INFRAVERMELHO", "IR");
   drawListItem(1, 71, "WIFI", WiFi.status() == WL_CONNECTED ? "ON" : "OFF");
 }
@@ -2515,7 +2585,7 @@ void setup() {
   configureWebRoutes();
 
   WiFi.persistent(false);
-  WiFi.setAutoReconnect(true);
+  WiFi.setAutoReconnect(false);  // reconexão é controlada pela nossa máquina de estados
   wifiAutoScanPending = true;
   wifiLastRetryScanAt = millis();
 
@@ -2532,7 +2602,7 @@ void setup() {
   drawScreen();
 
   Serial.println();
-  Serial.println("M5 PERSONAL v0.8 - IR + CHECKPOINT 1 iniciado.");
+  Serial.println("M5 PERSONAL v0.9 - WIFI RUNTIME FIX iniciado.");
   Serial.println("Rotacao 3: emissor IR deve ficar para cima.");
 }
 
@@ -2546,13 +2616,6 @@ void loop() {
 
   M5.update();
   buttonC.update();
-
-  if (screen == Screen::WIFI_CONNECTING) {
-    redraw = true;
-    drawScreen();
-    delay(10);
-    return;
-  }
 
   // B longo tem prioridade sobre B curto.
   if (M5.BtnB.wasHold()) {
@@ -2578,14 +2641,12 @@ void loop() {
 
   static bool toastWasVisible = false;
   const bool toastVisible = toast.length() && millis() < toastUntil;
-
-  if (toastWasVisible && !toastVisible) {
-    redraw = true;
-  }
-
+  if (toastWasVisible && !toastVisible) redraw = true;
   toastWasVisible = toastVisible;
 
-  if (screen == Screen::WIFI_SCANNING ||
+  // Limita telas animadas a ~16 FPS em vez de redesenhar a 100 FPS.
+  const bool animatedUi =
+      screen == Screen::WIFI_SCANNING ||
       screen == Screen::WIFI_CONNECTING ||
       screen == Screen::MAIN ||
       screen == Screen::WIFI_MENU ||
@@ -2594,7 +2655,11 @@ void loop() {
       screen == Screen::WIFI_SAVED_DETAIL ||
       screen == Screen::IR_TYPES ||
       screen == Screen::TV_LIST ||
-      screen == Screen::AC_LIST) {
+      screen == Screen::AC_LIST;
+
+  const uint32_t now = millis();
+  if (animatedUi && now - lastUiRefreshAt >= 60) {
+    lastUiRefreshAt = now;
     redraw = true;
   }
 
@@ -2602,5 +2667,5 @@ void loop() {
     drawScreen();
   }
 
-  delay(10);
+  delay(5);
 }
