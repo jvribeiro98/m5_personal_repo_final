@@ -159,3 +159,5 @@ jobs:
       - name: Publicar GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
+
+# Runtime v0.9 build verification trigger
