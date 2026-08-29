@@ -3,12 +3,13 @@
 #include <IRsend.h>
 #include <ir_Samsung.h>
 #include <ir_Midea.h>
+#include <ir_Coolix.h>
 #include <Preferences.h>
 #include <WiFi.h>
 #include <WebServer.h>
 
 // ============================================================
-// M5 PERSONAL v0.9 - IR + WIFI RUNTIME FIX
+// M5 PERSONAL v0.9.1 - IR + WIFI + COOLIX
 // Hardware: M5StickC Plus2
 // IR interno: GPIO 19
 // Orientacao: rotation 3 (emissor IR fisicamente para cima)
@@ -95,7 +96,8 @@ struct TvDevice {
 
 enum class AcBrand : uint8_t {
   SAMSUNG,
-  MIDEA
+  MIDEA,
+  MIDEA_COOLIX
 };
 
 enum class AcMode : uint8_t {
@@ -248,6 +250,7 @@ uint32_t lastUiRefreshAt = 0;
 IRsend tvIr(IR_PIN);
 IRSamsungAc samsungAc(IR_PIN);
 IRMideaAC mideaAc(IR_PIN);
+IRCoolixAC coolixAc(IR_PIN);
 
 Screen screen = Screen::MAIN;
 uint8_t selected = 0;
@@ -293,7 +296,8 @@ constexpr uint8_t TV_COUNT = sizeof(televisions) / sizeof(televisions[0]);
 
 AcDevice airConditioners[] = {
   {"Ar Samsung", AcBrand::SAMSUNG, {}},
-  {"Ar Midea", AcBrand::MIDEA, {}}
+  {"Ar Midea", AcBrand::MIDEA, {}},
+  {"Midea Antigo", AcBrand::MIDEA_COOLIX, {}}
 };
 
 constexpr uint8_t AC_COUNT = sizeof(airConditioners) / sizeof(airConditioners[0]);
@@ -365,8 +369,11 @@ uint8_t samsungMode(AcMode mode);
 uint8_t samsungFan(AcFan fan, AcMode mode);
 uint8_t mideaMode(AcMode mode);
 uint8_t mideaFan(AcFan fan);
+uint8_t coolixMode(AcMode mode);
+uint8_t coolixFan(AcFan fan);
 void applySamsungState(const AcState& state);
 void applyMideaState(const AcState& state);
+void applyCoolixState(const AcState& state);
 void sendAcState(const String& message);
 void toggleAcPower();
 void toggleAcSwing();
@@ -522,7 +529,7 @@ const char* acFanName(AcFan fan) {
 
 String sleepName(const AcDevice& device) {
   if (device.state.sleepMinutes == 0) return "OFF";
-  if (device.brand == AcBrand::MIDEA) return "ON";
+  if (device.brand == AcBrand::MIDEA || device.brand == AcBrand::MIDEA_COOLIX) return "ON";
   return String(device.state.sleepMinutes / 60) + "H";
 }
 
@@ -617,6 +624,27 @@ uint8_t mideaFan(AcFan fan) {
   return kMideaACFanAuto;
 }
 
+uint8_t coolixMode(AcMode mode) {
+  switch (mode) {
+    case AcMode::AUTO: return kCoolixAuto;
+    case AcMode::COOL: return kCoolixCool;
+    case AcMode::DRY:  return kCoolixDry;
+    case AcMode::FAN:  return kCoolixFan;
+    case AcMode::HEAT: return kCoolixHeat;
+  }
+  return kCoolixCool;
+}
+
+uint8_t coolixFan(AcFan fan) {
+  switch (fan) {
+    case AcFan::AUTO:         return kCoolixFanAuto;
+    case AcFan::LOW_SPEED:    return kCoolixFanMin;
+    case AcFan::MEDIUM_SPEED: return kCoolixFanMed;
+    case AcFan::HIGH_SPEED:   return kCoolixFanMax;
+  }
+  return kCoolixFanAuto;
+}
+
 void applySamsungState(const AcState& state) {
   samsungAc.setPower(state.power);
   samsungAc.setMode(samsungMode(state.mode));
@@ -644,6 +672,21 @@ void applyMideaState(const AcState& state) {
   mideaAc.setTurboToggle(false);
 }
 
+void applyCoolixState(const AcState& state) {
+  if (!state.power) {
+    coolixAc.setPower(false);
+    return;
+  }
+
+  coolixAc.setPower(true);
+  coolixAc.setMode(coolixMode(state.mode));
+  coolixAc.setFan(coolixFan(state.fan));
+  if (state.mode != AcMode::FAN) {
+    uint8_t temp = state.temp < kCoolixTempMin ? kCoolixTempMin : state.temp;
+    coolixAc.setTemp(temp);
+  }
+}
+
 void sendAcState(const String& message) {
   AcDevice& device = airConditioners[activeAc];
   AcState& state = device.state;
@@ -652,10 +695,14 @@ void sendAcState(const String& message) {
     applySamsungState(state);
     samsungAc.send();
     Serial.println(samsungAc.toString());
-  } else {
+  } else if (device.brand == AcBrand::MIDEA) {
     applyMideaState(state);
     mideaAc.send();
     Serial.println(mideaAc.toString());
+  } else {
+    applyCoolixState(state);
+    coolixAc.send();
+    Serial.println(coolixAc.toString());
   }
 
   saveAcState(activeAc);
@@ -678,9 +725,13 @@ void toggleAcPower() {
     } else {
       samsungAc.sendOff();
     }
-  } else {
+  } else if (device.brand == AcBrand::MIDEA) {
     applyMideaState(state);
     mideaAc.send();
+  } else {
+    applyCoolixState(state);
+    coolixAc.send();
+    Serial.println(coolixAc.toString());
   }
 
   saveAcState(activeAc);
@@ -700,6 +751,12 @@ void toggleAcSwing() {
     mideaAc.setSwingVToggle(false);
     saveAcState(activeAc);
     showToast(state.swing ? "SWING ON" : "SWING OFF");
+  } else if (device.brand == AcBrand::MIDEA_COOLIX) {
+    applyCoolixState(state);
+    coolixAc.setSwing();
+    coolixAc.send();
+    saveAcState(activeAc);
+    showToast(state.swing ? "SWING ON" : "SWING OFF");
   } else {
     sendAcState(state.swing ? "SWING ON" : "SWING OFF");
   }
@@ -716,6 +773,12 @@ void toggleAcTurbo() {
     mideaAc.setTurboToggle(true);
     mideaAc.send();
     mideaAc.setTurboToggle(false);
+    saveAcState(activeAc);
+    showToast(state.turbo ? "TURBO ON" : "TURBO OFF");
+  } else if (device.brand == AcBrand::MIDEA_COOLIX) {
+    applyCoolixState(state);
+    coolixAc.setTurbo();
+    coolixAc.send();
     saveAcState(activeAc);
     showToast(state.turbo ? "TURBO ON" : "TURBO OFF");
   } else {
@@ -761,6 +824,16 @@ void cycleAcSleep() {
   if (device.brand == AcBrand::MIDEA) {
     state.sleepMinutes = state.sleepMinutes ? 0 : 60;
     sendAcState(String("SLEEP ") + (state.sleepMinutes ? "ON" : "OFF"));
+    return;
+  }
+
+  if (device.brand == AcBrand::MIDEA_COOLIX) {
+    state.sleepMinutes = state.sleepMinutes ? 0 : 60;
+    applyCoolixState(state);
+    coolixAc.setSleep();
+    coolixAc.send();
+    saveAcState(activeAc);
+    showToast(String("SLEEP ") + (state.sleepMinutes ? "ON" : "OFF"));
     return;
   }
 
@@ -1590,7 +1663,7 @@ void handleWebTvPage() {
 void handleWebAcPage() {
   String body =
     "<div class='card stack'><div class='field'><label>Dispositivo</label><select id='device'>"
-    "<option value='0'>Ar Samsung</option><option value='1'>Ar Midea</option>"
+    "<option value='0'>Ar Samsung</option><option value='1'>Ar Midea</option><option value='2'>Midea Antigo (COOLIX)</option>"
     "</select></div><button class='btn primary' onclick='openRemote()'>Abrir controle</button></div>"
     "<div id='remoteBox' class='remote' style='display:none'><div class='row'><b id='remoteName'>Ar</b><div id='irLed' class='ir-led'></div></div>"
     "<div class='ac-display'><div class='sub' style='color:#38505c'>Temperatura</div><div class='temp'><span id='temp'>24</span><small>°C</small></div>"
@@ -1600,7 +1673,7 @@ void handleWebAcPage() {
     "<button class='btn' onclick='ac(5)'>Turbo</button><button class='btn' onclick='ac(6)'>Sleep</button></div></div>"
     "<script>function openRemote(){remoteBox.style.display='block';remoteName.textContent=device.options[device.selectedIndex].text}"
     "async function ac(c){const j=await api('/api/ir/ac?device='+device.value+'&action='+c);if(j.ok)flashIr()}"
-    "function changeTemp(v){let n=Number(temp.textContent)+v;temp.textContent=Math.max(16,Math.min(30,n))}</script>";
+    "function changeTemp(v){let n=Number(temp.textContent)+v;const min=device.value==='2'?17:16;temp.textContent=Math.max(min,Math.min(30,n))}</script>";
   webServer.send(200, "text/html; charset=utf-8", webShell("Ar-condicionado", body));
 }
 
@@ -2599,10 +2672,14 @@ void setup() {
   mideaAc.begin();
   applyMideaState(airConditioners[1].state);
 
+  coolixAc.stateReset();
+  coolixAc.begin();
+  applyCoolixState(airConditioners[2].state);
+
   drawScreen();
 
   Serial.println();
-  Serial.println("M5 PERSONAL v0.9 - WIFI RUNTIME FIX iniciado.");
+  Serial.println("M5 PERSONAL v0.9.1 - COOLIX iniciado.");
   Serial.println("Rotacao 3: emissor IR deve ficar para cima.");
 }
 
