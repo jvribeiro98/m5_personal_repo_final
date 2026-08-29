@@ -29,11 +29,16 @@ jobs:
           start = workflow.index(marker) + len(marker)
           end = workflow.index("\n          PY", start)
           code = textwrap.dedent(workflow[start:end])
-          exec(compile(code, 'm5_runtime_patch.py', 'exec'), {})
+          try:
+              exec(compile(code, 'm5_runtime_patch.py', 'exec'), {})
+          except SystemExit as exc:
+              # O fonte já foi escrito antes do patch tentar limpar firmware.yml.
+              # firmware.yml já foi corrigido diretamente, então este erro é esperado.
+              if 'bloco antigo de display no workflow não encontrado' not in str(exc):
+                  raise
+              print('Workflow de build já está limpo; mantendo patch do firmware.')
           PYRUN
 
-          # O patch validado também altera firmware.yml; essa alteração já foi
-          # aplicada diretamente pelo conector, então descartamos a cópia local.
           git checkout -- .github/workflows/firmware.yml
 
       - name: Validate firmware
