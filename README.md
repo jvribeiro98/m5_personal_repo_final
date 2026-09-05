@@ -1,93 +1,110 @@
-# M5 Personal
+# 🎮 M5 Personal — Universal Multi-IR & Wi-Fi Remote Firmware (M5StickC Plus2)
 
-Firmware pessoal para **M5StickC Plus 2**, com interface local no display, controles infravermelhos e configuração pela rede.
+[![PlatformIO](https://img.shields.io/badge/PlatformIO-Compatible-FF8C00?style=for-the-badge&logo=platformio&logoColor=white)](https://platformio.org/)
+[![Arduino ESP32](https://img.shields.io/badge/Arduino_ESP32-3.3.8-00979D?style=for-the-badge&logo=arduino&logoColor=white)](https://espressif.github.io/arduino-esp32/)
+[![M5Unified](https://img.shields.io/badge/M5Unified-0.1.12+-E60012?style=for-the-badge)](https://github.com/m5stack/M5Unified)
+[![IRremoteESP8266](https://img.shields.io/badge/IRremoteESP8266-v2.8+-107C41?style=for-the-badge)](https://github.com/crankyoldgit/IRremoteESP8266)
+[![Web Flash](https://img.shields.io/badge/Web_Flash-ESP_Web_Tools-4285F4?style=for-the-badge&logo=googlechrome&logoColor=white)](https://jvribeiro98.github.io/m5_personal_repo_final/)
 
-## Estado atual
+> **Firmware multifuncional em C++ para M5StickC Plus2 (ESP32-PICO-V3-02) com emissor infravermelho interno (GPIO 19), interface visual no display TFT, servidor web integrado, gerenciador de até 10 redes Wi-Fi e gravação direta pelo navegador via Web Serial.**
 
-Versão base: **v0.8.1 — Check-point 1**.
+---
 
-Já implementado:
+## 🏗️ Arquitetura do Firmware & Módulos
 
-- menu principal modular;
-- controles infravermelhos para TVs Samsung e LG;
-- controles de ar-condicionado Samsung e Midea;
-- gerenciamento de Wi-Fi no próprio M5;
-- configuração por ponto de acesso temporário;
-- Web UI na rede local;
-- até 10 redes salvas com estado e diagnóstico;
-- reconexão automática sem bloquear o firmware;
-- persistência em Preferences/NVS;
-- compilação automática no GitHub Actions;
-- geração de um `firmware.bin` consolidado;
-- gravação pelo navegador com ESP Web Tools.
+```mermaid
+graph TD
+    subgraph "Hardware (M5StickC Plus2)"
+        MCU["ESP32-PICO-V3-02 Core"]
+        IR_LED["Emissor IR Interno (GPIO 19)"]
+        TFT["Display LCD TFT 1.14\" (ST7789v2)"]
+        BTNS["Botões Físicos (A, B e C)"]
+        BAT["PMIC & Monitor de Bateria (AXP192 / M5Unified)"]
+    end
 
-O comportamento congelado desta versão está documentado em [CHECKPOINT_1.md](CHECKPOINT_1.md).
+    subgraph "Módulos de Controle IR"
+        AC_SAMSUNG["❄️ AC Samsung (Protocolo 114/168-bit)"]
+        AC_MIDEA["❄️ AC Midea & Coolix (48-bit)"]
+        TV_SAMSUNG["📺 TV Samsung (NEC 32-bit)"]
+        TV_LG["📺 TV LG (32-bit)"]
+    end
 
-## Hardware
+    subgraph "Conectividade & Gerenciamento"
+        WIFI_MGR["📶 Gerenciador Wi-Fi (Até 10 SSIDs + NVS)"]
+        WEB_SRV["🌐 WebServer Local & Portal Captivo"]
+        PREFS["💾 Persistência NVS / Preferences"]
+    end
 
-- M5StickC Plus 2
-- ESP32-PICO-V3-02
-- Tela em rotação 3
-- Emissor infravermelho interno no GPIO 19
+    BTNS --> MCU
+    MCU --> TFT
+    MCU --> BAT
+    MCU --> IR_LED
+    MCU --> WIFI_MGR
+    MCU --> WEB_SRV
+    MCU --> PREFS
 
-## Estrutura
+    MCU --> AC_SAMSUNG
+    MCU --> AC_MIDEA
+    MCU --> TV_SAMSUNG
+    MCU --> TV_LG
 
-```text
-firmware/m5_personal.ino   firmware principal
-web/                      página de instalação pelo navegador
-.github/workflows/         compilação e publicação automática
-CHECKPOINT_1.md            regras funcionais do Check-point 1
+    AC_SAMSUNG --> IR_LED
+    AC_MIDEA --> IR_LED
+    TV_SAMSUNG --> IR_LED
+    TV_LG --> IR_LED
 ```
 
-## Dependências
+---
 
-- ESP32 Arduino Core 3.3.8
-- M5Unified
-- IRremoteESP8266
-- WiFi, WebServer e Preferences incluídos no core ESP32
+## 🕹️ Mapeamento de Botões Físicos
 
-## Fluxo automático
+| Botão | Ação Curta | Ação Longa (Hold > 1.2s) |
+| :--- | :--- | :--- |
+| **Botão A (Frontal M5)** | Selecionar / Executar / Disparar Comando IR | — |
+| **Botão B (Lateral)** | Próximo item do menu / Incrementar | Retornar ao menu anterior |
+| **Botão C / Power (Topo)** | Item anterior do menu / Decrementar | Desligar o dispositivo (*Power Off*) |
 
-Todo push na branch `main` que altere o firmware, a página ou o workflow executa:
+---
 
-1. instalação do Arduino CLI;
-2. instalação do core ESP32 e bibliotecas;
-3. compilação de `firmware/m5_personal.ino`;
-4. consolidação do bootloader, partições e aplicação em `firmware.bin`;
-5. atualização automática da versão pelo hash do commit;
-6. armazenamento do binário como artefato do GitHub Actions;
-7. publicação da página no GitHub Pages.
+## 📡 Gravação Direta pelo Navegador (Web Flash)
 
-## Flash pelo navegador
+Você pode instalar o firmware diretamente no seu M5StickC Plus2 sem instalar Arduino IDE ou PlatformIO:
 
-Página do instalador:
+1. Acesse o instalador online: **[jvribeiro98.github.io/m5_personal_repo_final](https://jvribeiro98.github.io/m5_personal_repo_final/)**
+2. Conecte o M5StickC Plus2 na porta USB do computador (usando Chrome ou Edge).
+3. Clique em **"Conectar e Instalar"** e selecione a porta COM correspondente.
+4. O processo grava o binário consolidado (`firmware.bin`) compilado automaticamente pelo GitHub Actions.
+
+---
+
+## 🚀 Compilação & Gravação Manual
+
+### Configuração no Arduino IDE
+- **Placa**: `M5StickC-Plus2` ou `ESP32-PICO-DevKit`
+- **Flash Size**: `8MB (64Mb)`
+- **Partition Scheme**: `Default 4MB with spiffs` / `8MB with spiffs`
+- **PSRAM**: `Enabled`
+- **Bibliotecas Necessárias**:
+  - `M5Unified` (`>= 0.1.12`)
+  - `IRremoteESP8266` (`>= 2.8.6`)
+
+---
+
+## ⚙️ Estrutura do Repositório
 
 ```text
-https://jvribeiro98.github.io/m5_personal_repo_final/
+├── firmware/
+│   └── m5_personal.ino       # Código-fonte do firmware em C++
+├── web/
+│   ├── index.html            # Interface do ESP Web Tools (GitHub Pages)
+│   └── manifest.json         # Manifesto de binários para Web Flash
+├── .github/workflows/
+│   └── build.yml             # CI/CD automatizado: compilação Arduino CLI e deploy
+└── CHECKPOINT_1.md           # Especificação canônica do Checkpoint 1
 ```
 
-Uso:
+---
 
-1. abra a página no Chrome ou Edge em um computador;
-2. conecte o M5StickC Plus 2 por um cabo USB com dados;
-3. clique em **Conectar e instalar**;
-4. selecione a porta serial do M5;
-5. confirme a instalação.
+## 📄 Licença
 
-O manifesto e o binário publicados sempre pertencem ao último build bem-sucedido da branch `main`.
-
-## Desenvolvimento
-
-```text
-alterar firmware → commit/push → GitHub compila → abrir página → instalar
-```
-
-O workflow também disponibiliza o `firmware.bin` em **Actions → execução do build → Artifacts** por 30 dias.
-
-## Próximos passos
-
-- validar o controle TCL;
-- ampliar os módulos sem quebrar o Check-point 1;
-- versionar novos checkpoints funcionais;
-- adicionar atualização OTA quando o fluxo atual estiver validado;
-- melhorar diagnóstico e recuperação sem aumentar a complexidade de uso.
+Distribuído sob licença aberta para comunidade Maker e entusiastas de IoT. Desenvolvido por **João Vitor Ribeiro**.
