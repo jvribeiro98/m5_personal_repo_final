@@ -1,4 +1,4 @@
-name: Build e publicar firmware
+﻿name: Build e publicar firmware
 
 on:
   push:
@@ -39,6 +39,7 @@ jobs:
           arduino-cli lib update-index
           arduino-cli lib install "M5Unified"
           arduino-cli lib install "IRremoteESP8266"
+          arduino-cli lib install "NimBLE-Arduino@2.2.3"
 
       - name: Validar firmware fonte
         run: |
@@ -53,20 +54,12 @@ jobs:
         run: |
           rm -rf .build
           mkdir -p .build/m5_personal .build/output
-          cp firmware/m5_personal.ino .build/m5_personal/m5_personal.ino
-
-      - name: Validar correções de runtime quando presentes
-        run: |
-          if grep -q 'M5 PERSONAL v0.9' .build/m5_personal/m5_personal.ino; then
-            grep -q 'WiFi.setAutoReconnect(false)' .build/m5_personal/m5_personal.ino
-            grep -q 'webServerStopPending' .build/m5_personal/m5_personal.ino
-            grep -q 'WIFI RUNTIME FIX' .build/m5_personal/m5_personal.ino
-          fi
+          cp -r firmware/* .build/m5_personal/
 
       - name: Compilar firmware
         run: |
           arduino-cli compile \
-            --fqbn esp32:esp32:esp32 \
+            --fqbn esp32:esp32:m5stack_stickc_plus2 \
             --build-path "$GITHUB_WORKSPACE/.build/output" \
             --export-binaries \
             "$GITHUB_WORKSPACE/.build/m5_personal"
@@ -159,5 +152,3 @@ jobs:
       - name: Publicar GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
-
-# Runtime v0.9 build verification trigger
