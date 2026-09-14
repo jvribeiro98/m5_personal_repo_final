@@ -4120,7 +4120,7 @@ void drawVoiceAiScreen() {
     d.setTextDatum(middle_center);
     d.setTextSize(1);
     d.setTextColor(UI_YELLOW, UI_PANEL);
-    d.drawString("SEGURE [ A ] E FALE", 67, 106);
+    d.drawString("CLIQUE [ A ] E FALE", 67, 106);
 
     // Exemplos de comandos
     d.setTextDatum(middle_left);
@@ -4136,7 +4136,7 @@ void drawVoiceAiScreen() {
     d.setTextDatum(middle_center);
     d.setTextSize(1);
     d.setTextColor(UI_YELLOW, UI_PANEL);
-    d.drawString("OUVINDO VOZ...", 67, 68);
+    d.drawString("GRAVANDO...", 67, 68);
 
     // Onda Sonora Animada (VU meter com 7 barras)
     constexpr int barXs[] = {25, 38, 51, 64, 77, 90, 103};
@@ -4151,7 +4151,7 @@ void drawVoiceAiScreen() {
 
     d.setTextDatum(middle_center);
     d.setTextColor(UI_MUTED, UI_PANEL);
-    d.drawString("Fale seu comando", 67, 154);
+    d.drawString("Fale seu comando!", 67, 154);
 
   } else if (voiceState == VoiceState::THINKING) {
     d.setTextDatum(middle_center);
@@ -4206,7 +4206,11 @@ void drawVoiceAiScreen() {
   d.drawString("A", 18, 183);
   d.setTextDatum(middle_left);
   d.setTextColor(UI_TEXT, UI_PANEL);
-  d.drawString("Segure p/ Falar", 30, 183);
+  if (voiceState == VoiceState::LISTENING) {
+    d.drawString("Clique p/ Enviar", 30, 183);
+  } else {
+    d.drawString("Clique p/ Falar", 30, 183);
+  }
 
   d.fillRoundRect(12, 194, 12, 11, 2, UI_CYAN);
   d.setTextColor(UI_BG, UI_CYAN);
@@ -4226,50 +4230,104 @@ void processVoiceAiScreen() {
   lastUserActivityAt = millis();
 
   if (buttonC.wasClicked() || buttonC.wasHeld()) {
+    if (voiceState == VoiceState::LISTENING) {
+      Serial.println("VOICE_STOP");
+      voiceState = VoiceState::IDLE;
+    }
     goBack();
     return;
   }
 
-  // Botão B: se estiver em RESULT, rola o texto ou limpa
+  // Botão B: se estiver em RESULT, rola o texto ou cancela para IDLE
   if (M5.BtnB.wasClicked()) {
     if (voiceState == VoiceState::RESULT) {
       voiceScrollLine += 2;
       if (voiceScrollLine > 20) voiceScrollLine = 0;
       redraw = true;
     } else {
+      if (voiceState == VoiceState::LISTENING) {
+        Serial.println("VOICE_STOP");
+      }
       voiceState = VoiceState::IDLE;
       redraw = true;
     }
   }
 
-  // Pressionou Botão A: Inicia gravação Push-to-Talk
+  static uint32_t voiceRecStartTime = 0;
+  static uint32_t btnAPressTime = 0;
+  static bool btnAHeldDown = false;
+
   if (M5.BtnA.wasPressed()) {
-    voiceState = VoiceState::LISTENING;
-    voiceTranscription = "";
-    voiceResultTitle = "";
-    voiceResultBody = "";
-    voiceScrollLine = 0;
-    voiceWavePhase = 0;
-    Serial.println("VOICE_START");
-    if (M5.Speaker.isEnabled()) M5.Speaker.tone(1200, 40);
-    redraw = true;
+    btnAPressTime = millis();
+    btnAHeldDown = false;
   }
 
-  // Segurando Botão A: anima as ondas de áudio na tela
-  if (M5.BtnA.isPressed()) {
+  // Se segurar o botão por mais de 350ms, entra em modo HOLD (segurar para falar)
+  if (M5.BtnA.isPressed() && !btnAHeldDown && (millis() - btnAPressTime >= 350)) {
+    btnAHeldDown = true;
+    if (voiceState != VoiceState::LISTENING) {
+      voiceState = VoiceState::LISTENING;
+      voiceRecStartTime = millis();
+      voiceTranscription = "";
+      voiceResultTitle = "";
+      voiceResultBody = "";
+      voiceScrollLine = 0;
+      voiceWavePhase = 0;
+      Serial.println("VOICE_START");
+      if (M5.Speaker.isEnabled()) M5.Speaker.tone(1200, 50);
+      redraw = true;
+    }
+  }
+
+  // Quando o botão for solto:
+  if (M5.BtnA.wasReleased()) {
+    if (btnAHeldDown) {
+      // Estava segurando e soltou -> finaliza a gravação
+      btnAHeldDown = false;
+      if (voiceState == VoiceState::LISTENING) {
+        voiceState = VoiceState::THINKING;
+        Serial.println("VOICE_STOP");
+        if (M5.Speaker.isEnabled()) M5.Speaker.tone(1600, 50);
+        redraw = true;
+      }
+    } else {
+      // Foi um clique rápido (< 350ms) -> funciona como TOGGLE!
+      if (voiceState != VoiceState::LISTENING) {
+        voiceState = VoiceState::LISTENING;
+        voiceRecStartTime = millis();
+        voiceTranscription = "";
+        voiceResultTitle = "";
+        voiceResultBody = "";
+        voiceScrollLine = 0;
+        voiceWavePhase = 0;
+        Serial.println("VOICE_START");
+        if (M5.Speaker.isEnabled()) M5.Speaker.tone(1200, 50);
+        redraw = true;
+      } else {
+        // Já estava gravando -> clique para parar e processar!
+        voiceState = VoiceState::THINKING;
+        Serial.println("VOICE_STOP");
+        if (M5.Speaker.isEnabled()) M5.Speaker.tone(1600, 50);
+        redraw = true;
+      }
+    }
+  }
+
+  // Se estiver gravando (LISTENING)
+  if (voiceState == VoiceState::LISTENING) {
     voiceWavePhase = (voiceWavePhase + 1) % 360;
     if (millis() - voiceAnimTimer > 40) {
       voiceAnimTimer = millis();
       redraw = true;
     }
-  }
 
-  // Soltou Botão A: Envia parada e entra no estado de processamento
-  if (M5.BtnA.wasReleased()) {
-    voiceState = VoiceState::THINKING;
-    Serial.println("VOICE_STOP");
-    if (M5.Speaker.isEnabled()) M5.Speaker.tone(1600, 40);
-    redraw = true;
+    // Auto-timeout de segurança após 8.5 segundos gravando
+    if (millis() - voiceRecStartTime >= 8500) {
+      voiceState = VoiceState::THINKING;
+      Serial.println("VOICE_STOP");
+      if (M5.Speaker.isEnabled()) M5.Speaker.tone(1600, 50);
+      redraw = true;
+    }
   }
 
   // Lê respostas seriais enviadas pela ponte no PC
@@ -4278,7 +4336,6 @@ void processVoiceAiScreen() {
     line.trim();
     if (line.length() == 0) continue;
 
-    // Parse simples e seguro de JSON recebido
     if (line.startsWith("{") && line.endsWith("}")) {
       int typeIdx = line.indexOf("\"type\":\"");
       if (typeIdx != -1) {
@@ -4296,10 +4353,8 @@ void processVoiceAiScreen() {
             redraw = true;
           }
         } else if (msgType == "STATUS") {
-          // Status temporário
           redraw = true;
         } else if (msgType == "RESULT") {
-          // Extrai agent, title, body
           int aIdx = line.indexOf("\"agent\":\"");
           if (aIdx != -1) {
             int aEnd = line.indexOf("\"", aIdx + 9);
