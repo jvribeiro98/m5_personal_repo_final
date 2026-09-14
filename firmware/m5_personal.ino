@@ -3314,7 +3314,143 @@ void drawFooter() {
     display.setTextDatum(middle_center);
     display.setTextColor(UI_GREEN, UI_PANEL_ALT);
     display.drawString(toast, 120, 126);
-  } else if (screen == Screen::MOUSE) {
+    return;
+  }
+
+  // Footer especifico para BOIS SORTEADOS
+  if (screen == Screen::TEAM_CATTLE_COUNTER) {
+    const uint8_t remaining = cattleRemainingCount();
+    display.fillRoundRect(6, 121, 14, 11, 2, remaining <= 1 ? UI_GREEN : UI_ORANGE);
+    display.setTextColor(UI_BG, remaining <= 1 ? UI_GREEN : UI_ORANGE);
+    display.setTextDatum(middle_center);
+    display.drawString("A", 13, 126);
+    display.setTextColor(UI_TEXT, UI_BG);
+    display.setTextDatum(middle_left);
+    display.drawString(remaining <= 1 ? "Reiniciar" : "Marcar", 23, 126);
+
+    display.fillRoundRect(78, 121, 14, 11, 2, UI_CYAN);
+    display.setTextColor(UI_BG, UI_CYAN);
+    display.setTextDatum(middle_center);
+    display.drawString("B", 85, 126);
+    display.setTextColor(UI_TEXT, UI_BG);
+    display.setTextDatum(middle_left);
+    display.drawString("Prox", 95, 126);
+
+    display.fillRoundRect(128, 121, 14, 11, 2, UI_MUTED);
+    display.setTextColor(UI_BG, UI_MUTED);
+    display.setTextDatum(middle_center);
+    display.drawString("C", 135, 126);
+    display.setTextColor(UI_TEXT, UI_BG);
+    display.setTextDatum(middle_left);
+    display.drawString("Voltar", 145, 126);
+
+    display.setTextDatum(middle_right);
+    display.setTextColor(UI_MUTED, UI_BG);
+    display.drawString("Segure A: Zerar", 234, 126);
+    return;
+  }
+
+  // Footer especifico para TREINO ATIVO
+  if (screen == Screen::TEAM_TRAIN_ACTIVE) {
+    display.fillRoundRect(6, 121, 14, 11, 2, UI_GREEN);
+    display.setTextColor(UI_BG, UI_GREEN);
+    display.setTextDatum(middle_center);
+    display.drawString("A", 13, 126);
+    display.setTextColor(UI_TEXT, UI_BG);
+    display.setTextDatum(middle_left);
+    display.drawString("+Passada", 23, 126);
+
+    display.fillRoundRect(80, 121, 14, 11, 2, UI_CYAN);
+    display.setTextColor(UI_BG, UI_CYAN);
+    display.setTextDatum(middle_center);
+    display.drawString("B", 87, 126);
+    display.setTextColor(UI_TEXT, UI_BG);
+    display.setTextDatum(middle_left);
+    display.drawString("Cavalo", 97, 126);
+
+    display.fillRoundRect(140, 121, 14, 11, 2, UI_ORANGE);
+    display.setTextColor(UI_BG, UI_ORANGE);
+    display.setTextDatum(middle_center);
+    display.drawString("C", 147, 126);
+    display.setTextColor(UI_TEXT, UI_BG);
+    display.setTextDatum(middle_left);
+    display.drawString("-1", 157, 126);
+
+    display.setTextDatum(middle_right);
+    display.setTextColor(UI_MUTED, UI_BG);
+    display.drawString("Segure A: Fim", 234, 126);
+    return;
+  }
+
+  // Footer para telas de confirmacao
+  if (screen == Screen::TEAM_CATTLE_RESET_CONFIRM || screen == Screen::TEAM_TRAIN_END_CONFIRM) {
+    display.fillRoundRect(8, 121, 14, 11, 2, UI_GREEN);
+    display.setTextColor(UI_BG, UI_GREEN);
+    display.setTextDatum(middle_center);
+    display.drawString("A", 15, 126);
+    display.setTextColor(UI_TEXT, UI_BG);
+    display.setTextDatum(middle_left);
+    display.drawString("Confirmar", 25, 126);
+
+    display.fillRoundRect(95, 121, 18, 11, 2, UI_MUTED);
+    display.setTextColor(UI_BG, UI_MUTED);
+    display.setTextDatum(middle_center);
+    display.drawString("B/C", 104, 126);
+    display.setTextColor(UI_TEXT, UI_BG);
+    display.setTextDatum(middle_left);
+    display.drawString("Cancelar", 118, 126);
+    return;
+  }
+
+  // Footer para resumo de treino e detalhe de historico
+  if (screen == Screen::TEAM_TRAIN_SUMMARY || screen == Screen::TEAM_TRAIN_HISTORY_DETAIL) {
+    display.fillRoundRect(8, 121, 14, 11, 2, UI_CYAN);
+    display.setTextColor(UI_BG, UI_CYAN);
+    display.setTextDatum(middle_center);
+    display.drawString("B", 15, 126);
+    display.setTextColor(UI_TEXT, UI_BG);
+    display.setTextDatum(middle_left);
+    display.drawString("Prox Cavalo", 25, 126);
+
+    display.fillRoundRect(110, 121, 14, 11, 2, UI_MUTED);
+    display.setTextColor(UI_BG, UI_MUTED);
+    display.setTextDatum(middle_center);
+    display.drawString("C", 117, 126);
+    display.setTextColor(UI_TEXT, UI_BG);
+    display.setTextDatum(middle_left);
+    display.drawString("Voltar", 127, 126);
+    return;
+  }
+
+  // Footer para configuracoes de cavalos e limite de gado
+  if (screen == Screen::TEAM_TRAIN_COUNT || screen == Screen::TEAM_TRAIN_SELECT_HORSE || screen == Screen::TEAM_CATTLE_LIMIT) {
+    display.fillRoundRect(8, 121, 14, 11, 2, UI_ORANGE);
+    display.setTextColor(UI_BG, UI_ORANGE);
+    display.setTextDatum(middle_center);
+    display.drawString("A", 15, 126);
+    display.setTextColor(UI_TEXT, UI_BG);
+    display.setTextDatum(middle_left);
+    display.drawString("Confirmar", 25, 126);
+
+    display.fillRoundRect(88, 121, 14, 11, 2, UI_CYAN);
+    display.setTextColor(UI_BG, UI_CYAN);
+    display.setTextDatum(middle_center);
+    display.drawString("B", 95, 126);
+    display.setTextColor(UI_TEXT, UI_BG);
+    display.setTextDatum(middle_left);
+    display.drawString("Mudar", 105, 126);
+
+    display.fillRoundRect(145, 121, 14, 11, 2, UI_MUTED);
+    display.setTextColor(UI_BG, UI_MUTED);
+    display.setTextDatum(middle_center);
+    display.drawString("C", 152, 126);
+    display.setTextColor(UI_TEXT, UI_BG);
+    display.setTextDatum(middle_left);
+    display.drawString("Voltar", 162, 126);
+    return;
+  }
+
+  if (screen == Screen::MOUSE) {
     display.setTextDatum(middle_left);
     display.setTextColor(UI_MUTED, UI_BG);
     display.drawString("A:Esq  B:Dir  C:Sair", 8, 127);
@@ -3759,156 +3895,310 @@ void drawAcRemote() {
 
 void drawTeamMenu() {
   drawTitle("TEAM PENNING");
-  drawListItem(0, 40, "BOIS SORTEADOS");
-  drawListItem(1, 67, trainingSession.active ? "TREINO - CONTINUAR" : "TREINO");
-  drawListItem(2, 94, "TREINOS SALVOS");
+  drawListItem(0, 36, "BOIS SORTEADOS", "Controle de gado");
+  drawListItem(1, 62, trainingSession.active ? "TREINO ATIVO" : "NOVO TREINO", trainingSession.active ? "Em andamento" : "Iniciar sessao");
+  drawListItem(2, 88, "TREINOS SALVOS", "Historico");
 }
 
 void drawCattleLimit() {
+  drawTitle("CONFIGURAR GADO", "LIMITE");
   auto& display = M5.Display;
+  display.fillRoundRect(10, 32, 220, 84, 6, UI_PANEL);
+  display.drawRoundRect(10, 32, 220, 84, 6, UI_SELECTED);
+
   display.setTextDatum(top_center);
   display.setTextSize(1);
-  display.setTextColor(UI_MUTED, UI_BG);
-  display.drawString("BOIADA DE 0 ATE", 67, 18);
+  display.setTextColor(UI_MUTED, UI_PANEL);
+  display.drawString("QUANTIDADE DE ANIMAIS NA ARENA:", 120, 42);
+
   display.setTextDatum(middle_center);
-  display.setTextSize(7);
-  display.setTextColor(UI_TEXT, UI_BG);
-  display.drawString(String(cattleMaxNumber), 67, 112);
+  display.setTextSize(4);
+  display.setTextColor(UI_YELLOW, UI_PANEL);
+  display.drawString("0 ATE " + String(cattleMaxNumber), 120, 72);
+
+  display.setTextDatum(bottom_center);
   display.setTextSize(1);
-  display.setTextColor(UI_MUTED, UI_BG);
-  display.drawString("A CONFIRMA", 67, 214);
+  display.setTextColor(UI_TEXT, UI_PANEL);
+  display.drawString("(" + String(cattleMaxNumber + 1) + " bois no total)", 120, 108);
 }
 
 void drawCattleCounter() {
   auto& display = M5.Display;
   const uint8_t remaining = cattleRemainingCount();
-  if (remaining == 1) {
-    display.fillScreen(UI_GREEN);
-    display.setTextDatum(top_center);
-    display.setTextSize(1);
-    display.setTextColor(UI_TEXT, UI_GREEN);
-    display.drawString("ULTIMO BOI", 67, 22);
+  String subTitle = "FALTAM: " + String(remaining) + "/" + String(cattleMaxNumber + 1);
+  if (remaining == 1) subTitle = "ULTIMO BOI!";
+  else if (remaining == 0) subTitle = "BOIADA ZERADA";
+  drawTitle("BOIS SORTEADOS", subTitle);
+
+  // Painel Esquerdo: Boi da Vez / Acao
+  display.fillRoundRect(6, 30, 98, 86, 6, UI_PANEL);
+  uint16_t cardBorder = (remaining <= 1) ? UI_GREEN : UI_SELECTED;
+  display.drawRoundRect(6, 30, 98, 86, 6, cardBorder);
+
+  display.setTextDatum(top_center);
+  display.setTextSize(1);
+  if (remaining == 0) {
+    display.setTextColor(UI_RED, UI_PANEL);
+    display.drawString("BOIADA FIM", 55, 36);
+
     display.setTextDatum(middle_center);
-    display.setTextSize(8);
-    display.drawString(String(cattleSelectedNumber), 67, 122);
+    display.setTextSize(3);
+    display.setTextColor(UI_YELLOW, UI_PANEL);
+    display.drawString("ZERADA", 55, 68);
+
+    display.fillRoundRect(12, 94, 86, 16, 3, UI_GREEN);
+    display.setTextColor(UI_BG, UI_GREEN);
+    display.setTextDatum(middle_center);
     display.setTextSize(1);
-    display.drawString("A REINICIA A BOIADA", 67, 214);
-    return;
+    display.drawString("[A] REINICIAR", 55, 102);
+  } else if (remaining == 1) {
+    display.setTextColor(UI_GREEN, UI_PANEL);
+    display.drawString("ULTIMO BOI!", 55, 36);
+
+    display.setTextDatum(middle_center);
+    display.setTextSize(5);
+    display.setTextColor(UI_GREEN, UI_PANEL);
+    display.drawString(String(cattleSelectedNumber), 55, 68);
+
+    display.fillRoundRect(12, 94, 86, 16, 3, UI_GREEN);
+    display.setTextColor(UI_BG, UI_GREEN);
+    display.setTextDatum(middle_center);
+    display.setTextSize(1);
+    display.drawString("[A] REINICIAR", 55, 102);
+  } else {
+    display.setTextColor(UI_MUTED, UI_PANEL);
+    display.drawString("BOI SORTEADO", 55, 36);
+
+    display.setTextDatum(middle_center);
+    display.setTextSize(5);
+    display.setTextColor(UI_YELLOW, UI_PANEL);
+    display.drawString(String(cattleSelectedNumber), 55, 68);
+
+    display.fillRoundRect(12, 94, 86, 16, 3, UI_SELECTED);
+    display.setTextColor(UI_BG, UI_SELECTED);
+    display.setTextDatum(middle_center);
+    display.setTextSize(1);
+    display.drawString("[A] MARCAR", 55, 102);
   }
 
+  // Painel Direito: Grid Visual da Boiada (Bois 0 a 9)
+  display.fillRoundRect(110, 30, 124, 86, 6, UI_PANEL);
+  display.drawRoundRect(110, 30, 124, 86, 6, UI_BORDER);
+
   display.setTextDatum(top_center);
   display.setTextSize(1);
-  display.setTextColor(UI_MUTED, UI_BG);
-  display.drawString("BOIS SORTEADOS", 67, 12);
-  display.setTextDatum(middle_center);
-  display.setTextSize(8);
-  display.setTextColor(UI_TEXT, UI_BG);
-  display.drawString(String(cattleSelectedNumber), 67, 88);
+  display.setTextColor(UI_MUTED, UI_PANEL);
+  display.drawString("ARENA GADO", 172, 36);
 
-  display.drawFastHLine(10, 145, 115, UI_BORDER);
-  display.setTextDatum(top_center);
-  display.setTextSize(1);
-  display.setTextColor(UI_MUTED, UI_BG);
-  display.drawString("FALTAM", 67, 154);
+  // Grade 2x5 dos animais
+  for (uint8_t i = 0; i <= min<uint8_t>(9, cattleMaxNumber); i++) {
+    int col = i % 5;
+    int row = i / 5;
+    int cx = 114 + col * 23;
+    int cy = 48 + row * 31;
+    int cw = 21;
+    int ch = 26;
 
-  int index = 0;
-  for (uint8_t i = 0; i <= cattleMaxNumber; i++) {
-    if (isCattleDrawn(i)) continue;
-    int col = index % 5;
-    int row = index / 5;
-    int x = 15 + col * 26;
-    int y = 180 + row * 27;
-    display.setTextDatum(middle_center);
-    display.setTextSize(2);
-    display.setTextColor(i == cattleSelectedNumber ? UI_YELLOW : UI_TEXT, UI_BG);
-    display.drawString(String(i), x, y);
-    index++;
+    if (isCattleDrawn(i)) {
+      // Boi ja sorteado / correu (strikethrough dim)
+      display.fillRoundRect(cx, cy, cw, ch, 3, UI_BG);
+      display.drawRoundRect(cx, cy, cw, ch, 3, UI_BORDER);
+      display.setTextDatum(middle_center);
+      display.setTextSize(2);
+      display.setTextColor(0x52AA, UI_BG); // cinza escuro
+      display.drawString(String(i), cx + cw / 2, cy + ch / 2);
+      display.drawFastHLine(cx + 2, cy + ch / 2, cw - 4, UI_RED);
+    } else if (i == cattleSelectedNumber) {
+      // Boi atualmente selecionado (destaque amarelo neon)
+      display.fillRoundRect(cx, cy, cw, ch, 3, UI_YELLOW);
+      display.setTextDatum(middle_center);
+      display.setTextSize(2);
+      display.setTextColor(UI_BG, UI_YELLOW);
+      display.drawString(String(i), cx + cw / 2, cy + ch / 2);
+    } else {
+      // Boi ainda disponivel na arena
+      display.fillRoundRect(cx, cy, cw, ch, 3, UI_PANEL_ALT);
+      display.drawRoundRect(cx, cy, cw, ch, 3, UI_BORDER);
+      display.setTextDatum(middle_center);
+      display.setTextSize(2);
+      display.setTextColor(UI_TEXT, UI_PANEL_ALT);
+      display.drawString(String(i), cx + cw / 2, cy + ch / 2);
+    }
   }
 }
 
 void drawCattleResetConfirm() {
+  drawTitle("TEAM PENNING", "CONFIRMACAO");
   auto& display = M5.Display;
+  display.fillRoundRect(12, 32, 216, 84, 6, UI_PANEL);
+  display.drawRoundRect(12, 32, 216, 84, 6, UI_RED);
+
   display.setTextDatum(middle_center);
   display.setTextSize(2);
-  display.setTextColor(UI_TEXT, UI_BG);
-  display.drawString("ZERAR", 67, 78);
-  display.drawString("BOIADA?", 67, 108);
+  display.setTextColor(UI_RED, UI_PANEL);
+  display.drawString("ZERAR A BOIADA?", 120, 56);
+
   display.setTextSize(1);
-  display.setTextColor(UI_GREEN, UI_BG);
-  display.drawString("A CONFIRMA", 67, 164);
-  display.setTextColor(UI_MUTED, UI_BG);
-  display.drawString("B VOLTA", 67, 190);
+  display.setTextColor(UI_TEXT, UI_PANEL);
+  display.drawString("Todos os bois voltam a ficar disponiveis.", 120, 80);
+
+  display.setTextColor(UI_GREEN, UI_PANEL);
+  display.drawString("[ A ] SIM, ZERAR     [ B / C ] CANCELAR", 120, 102);
 }
 
-
 void drawTrainingCount() {
-  drawTitle("TREINO", "QUANTOS CAVALOS?");
-  M5.Display.setTextDatum(middle_center);
-  M5.Display.setTextSize(6);
-  M5.Display.setTextColor(UI_TEXT, UI_BG);
-  M5.Display.drawString(String(trainingSetupCount), 120, 82);
+  drawTitle("NOVO TREINO", "CONFIGURACAO");
+  auto& display = M5.Display;
+  display.fillRoundRect(12, 32, 216, 84, 6, UI_PANEL);
+  display.drawRoundRect(12, 32, 216, 84, 6, UI_SELECTED);
+
+  display.setTextDatum(top_center);
+  display.setTextSize(1);
+  display.setTextColor(UI_MUTED, UI_PANEL);
+  display.drawString("QUANTOS CAVALOS IRAO TREINAR?", 120, 42);
+
+  display.setTextDatum(middle_center);
+  display.setTextSize(5);
+  display.setTextColor(UI_YELLOW, UI_PANEL);
+  display.drawString(String(trainingSetupCount), 120, 72);
+
+  display.setTextDatum(bottom_center);
+  display.setTextSize(1);
+  display.setTextColor(UI_CYAN, UI_PANEL);
+  display.drawString("Clique [ B ] para alternar (1 a 5)", 120, 108);
 }
 
 void drawTrainingSelectHorse() {
-  drawTitle("TREINO", "ESCOLHA " + String(trainingSetupSlot + 1) + "/" + String(trainingSetupCount));
-  M5.Display.fillRoundRect(20, 54, 200, 46, 8, UI_PANEL);
-  M5.Display.setTextDatum(middle_center);
-  M5.Display.setTextSize(2);
-  M5.Display.setTextColor(UI_TEXT, UI_PANEL);
-  M5.Display.drawString(TRAIN_HORSE_NAMES[trainingSetupCandidate], 120, 77);
-  M5.Display.setTextSize(1);
-  M5.Display.setTextColor(UI_MUTED, UI_BG);
-  M5.Display.drawString("A CONFIRMA", 120, 112);
+  drawTitle("ESCOLHA O CAVALO", String(trainingSetupSlot + 1) + " DE " + String(trainingSetupCount));
+  auto& display = M5.Display;
+  display.fillRoundRect(12, 32, 216, 84, 6, UI_PANEL);
+  display.drawRoundRect(12, 32, 216, 84, 6, UI_SELECTED);
+
+  display.setTextDatum(top_center);
+  display.setTextSize(1);
+  display.setTextColor(UI_MUTED, UI_PANEL);
+  display.drawString("ANIMAL PARA A POSICAO " + String(trainingSetupSlot + 1) + ":", 120, 42);
+
+  display.fillRoundRect(24, 56, 192, 32, 4, UI_PANEL_ALT);
+  display.drawRoundRect(24, 56, 192, 32, 4, UI_YELLOW);
+  display.setTextDatum(middle_center);
+  display.setTextSize(2);
+  display.setTextColor(UI_YELLOW, UI_PANEL_ALT);
+  display.drawString(TRAIN_HORSE_NAMES[trainingSetupCandidate], 120, 72);
+
+  display.setTextDatum(bottom_center);
+  display.setTextSize(1);
+  display.setTextColor(UI_CYAN, UI_PANEL);
+  display.drawString("◄ [ B ] Proximo Animal   |   [ A ] Confirmar", 120, 108);
 }
 
 void drawTrainingActive() {
   uint8_t i = trainingSession.currentHorse;
-  drawTitle("TREINO", String(i + 1) + "/" + String(trainingSession.horseCount));
-  M5.Display.setTextDatum(top_center);
-  M5.Display.setTextSize(2);
-  M5.Display.setTextColor(UI_TEXT, UI_BG);
-  M5.Display.drawString(TRAIN_HORSE_NAMES[trainingSession.horseIds[i]], 120, 38);
-  M5.Display.setTextSize(1);
-  M5.Display.setTextColor(UI_MUTED, UI_BG);
-  M5.Display.drawString("PASSADAS", 120, 66);
-  M5.Display.setTextDatum(middle_center);
-  M5.Display.setTextSize(6);
-  M5.Display.setTextColor(UI_SELECTED, UI_BG);
-  M5.Display.drawString(String(trainingSession.passes[i]), 120, 94);
+  drawTitle("TREINO ATIVO", String(i + 1) + "/" + String(trainingSession.horseCount));
+  auto& display = M5.Display;
+
+  // Painel Esquerdo: Cavalo Atual
+  display.fillRoundRect(6, 30, 110, 86, 6, UI_PANEL);
+  display.drawRoundRect(6, 30, 110, 86, 6, UI_SELECTED);
+
+  display.setTextDatum(top_center);
+  display.setTextSize(1);
+  display.setTextColor(UI_MUTED, UI_PANEL);
+  display.drawString("CAVALO ATUAL", 61, 36);
+
+  display.setTextDatum(middle_center);
+  display.setTextSize(2);
+  display.setTextColor(UI_CYAN, UI_PANEL);
+  display.drawString(TRAIN_HORSE_NAMES[trainingSession.horseIds[i]], 61, 64);
+
+  display.setTextDatum(bottom_center);
+  display.setTextSize(1);
+  display.setTextColor(UI_MUTED, UI_PANEL);
+  display.drawString("◄ [ B ] Proximo ►", 61, 108);
+
+  // Painel Direito: Passadas
+  display.fillRoundRect(122, 30, 112, 86, 6, UI_PANEL);
+  display.drawRoundRect(122, 30, 112, 86, 6, UI_YELLOW);
+
+  display.setTextDatum(top_center);
+  display.setTextSize(1);
+  display.setTextColor(UI_MUTED, UI_PANEL);
+  display.drawString("PASSADAS", 178, 36);
+
+  display.setTextDatum(middle_center);
+  display.setTextSize(5);
+  display.setTextColor(UI_YELLOW, UI_PANEL);
+  display.drawString(String(trainingSession.passes[i]), 178, 68);
+
+  display.setTextDatum(bottom_center);
+  display.setTextSize(1);
+  display.setTextColor(UI_GREEN, UI_PANEL);
+  display.drawString("[ A ] +1   [ C ] -1", 178, 108);
 }
 
 void drawTrainingEndConfirm() {
-  M5.Display.setTextDatum(middle_center);
-  M5.Display.setTextSize(2);
-  M5.Display.setTextColor(UI_TEXT, UI_BG);
-  M5.Display.drawString("ENCERRAR TREINO?", 120, 52);
-  M5.Display.setTextSize(1);
-  M5.Display.setTextColor(UI_GREEN, UI_BG);
-  M5.Display.drawString("A CONFIRMA", 120, 86);
-  M5.Display.setTextColor(UI_MUTED, UI_BG);
-  M5.Display.drawString("B VOLTA", 120, 106);
+  drawTitle("TREINO", "FINALIZAR");
+  auto& display = M5.Display;
+  display.fillRoundRect(12, 32, 216, 84, 6, UI_PANEL);
+  display.drawRoundRect(12, 32, 216, 84, 6, UI_YELLOW);
+
+  display.setTextDatum(middle_center);
+  display.setTextSize(2);
+  display.setTextColor(UI_YELLOW, UI_PANEL);
+  display.drawString("ENCERRAR TREINO?", 120, 56);
+
+  display.setTextSize(1);
+  display.setTextColor(UI_TEXT, UI_PANEL);
+  display.drawString("Os dados serao salvos no historico com a data.", 120, 80);
+
+  display.setTextColor(UI_GREEN, UI_PANEL);
+  display.drawString("[ A ] SALVAR E FECHAR     [ B / C ] VOLTAR", 120, 102);
 }
 
 void drawTrainingSummary() {
   const TrainingRecord& r = trainingHistory[0];
-  if (!r.valid || !r.horseCount) { drawTitle("TREINO SALVO"); return; }
+  if (!r.valid || !r.horseCount) { drawTitle("TREINO SALVO", "SEM DADOS"); return; }
   uint8_t i = min<uint8_t>(trainingSummaryHorse, r.horseCount - 1);
-  drawTitle("TREINO SALVO", String(r.date));
-  M5.Display.setTextDatum(top_center);
-  M5.Display.setTextSize(2);
-  M5.Display.setTextColor(UI_TEXT, UI_BG);
-  M5.Display.drawString(TRAIN_HORSE_NAMES[r.horseIds[i]], 120, 44);
-  M5.Display.setTextSize(3);
-  M5.Display.setTextColor(UI_SELECTED, UI_BG);
-  M5.Display.drawString(String(r.passes[i]) + " passadas", 120, 76);
+  drawTitle("TREINO CONCLUIDO", String(r.date));
+  auto& display = M5.Display;
+
+  display.fillRoundRect(6, 30, 110, 86, 6, UI_PANEL);
+  display.drawRoundRect(6, 30, 110, 86, 6, UI_SELECTED);
+  display.setTextDatum(top_center);
+  display.setTextSize(1);
+  display.setTextColor(UI_MUTED, UI_PANEL);
+  display.drawString("ANIMAL", 61, 36);
+  display.setTextDatum(middle_center);
+  display.setTextSize(2);
+  display.setTextColor(UI_CYAN, UI_PANEL);
+  display.drawString(TRAIN_HORSE_NAMES[r.horseIds[i]], 61, 64);
+  display.setTextDatum(bottom_center);
+  display.setTextSize(1);
+  display.setTextColor(UI_MUTED, UI_PANEL);
+  display.drawString("◄ [ B ] " + String(i + 1) + "/" + String(r.horseCount) + " ►", 61, 108);
+
+  display.fillRoundRect(122, 30, 112, 86, 6, UI_PANEL);
+  display.drawRoundRect(122, 30, 112, 86, 6, UI_GREEN);
+  display.setTextDatum(top_center);
+  display.setTextSize(1);
+  display.setTextColor(UI_MUTED, UI_PANEL);
+  display.drawString("TOTAL PASSADAS", 178, 36);
+  display.setTextDatum(middle_center);
+  display.setTextSize(5);
+  display.setTextColor(UI_GREEN, UI_PANEL);
+  display.drawString(String(r.passes[i]), 178, 68);
+  display.setTextDatum(bottom_center);
+  display.setTextSize(1);
+  display.setTextColor(UI_TEXT, UI_PANEL);
+  display.drawString("Salvo com sucesso!", 178, 108);
 }
 
 void drawTrainingHistory() {
   drawTitle("TREINOS SALVOS");
   for (uint8_t i = 0; i < MAX_TRAIN_HISTORY; i++) {
-    String label = trainingHistory[i].valid ? "TREINO " + String(i + 1) : "VAZIO";
-    String detail = trainingHistory[i].valid ? String(trainingHistory[i].date) : "Sem registro";
-    drawListItem(i, 52 + i * 34, label, detail);
+    String label = trainingHistory[i].valid ? "TREINO " + String(i + 1) : "SLOT VAZIO";
+    String detail = trainingHistory[i].valid ? (String(trainingHistory[i].date) + " (" + String(trainingHistory[i].horseCount) + " cav)") : "Sem dados";
+    drawListItem(i, 40 + i * 32, label, detail);
   }
 }
 
@@ -3917,13 +4207,37 @@ void drawTrainingHistoryDetail() {
   if (!r.valid || !r.horseCount) { drawTitle("SEM REGISTRO"); return; }
   uint8_t i = min<uint8_t>(trainingHistoryHorse, r.horseCount - 1);
   drawTitle("TREINO " + String(trainingHistoryRecord + 1), String(r.date));
-  M5.Display.setTextDatum(top_center);
-  M5.Display.setTextSize(2);
-  M5.Display.setTextColor(UI_TEXT, UI_BG);
-  M5.Display.drawString(TRAIN_HORSE_NAMES[r.horseIds[i]], 120, 44);
-  M5.Display.setTextSize(3);
-  M5.Display.setTextColor(UI_SELECTED, UI_BG);
-  M5.Display.drawString(String(r.passes[i]) + " passadas", 120, 76);
+  auto& display = M5.Display;
+
+  display.fillRoundRect(6, 30, 110, 86, 6, UI_PANEL);
+  display.drawRoundRect(6, 30, 110, 86, 6, UI_SELECTED);
+  display.setTextDatum(top_center);
+  display.setTextSize(1);
+  display.setTextColor(UI_MUTED, UI_PANEL);
+  display.drawString("ANIMAL", 61, 36);
+  display.setTextDatum(middle_center);
+  display.setTextSize(2);
+  display.setTextColor(UI_CYAN, UI_PANEL);
+  display.drawString(TRAIN_HORSE_NAMES[r.horseIds[i]], 61, 64);
+  display.setTextDatum(bottom_center);
+  display.setTextSize(1);
+  display.setTextColor(UI_MUTED, UI_PANEL);
+  display.drawString("◄ [ B ] " + String(i + 1) + "/" + String(r.horseCount) + " ►", 61, 108);
+
+  display.fillRoundRect(122, 30, 112, 86, 6, UI_PANEL);
+  display.drawRoundRect(122, 30, 112, 86, 6, UI_GREEN);
+  display.setTextDatum(top_center);
+  display.setTextSize(1);
+  display.setTextColor(UI_MUTED, UI_PANEL);
+  display.drawString("PASSADAS", 178, 36);
+  display.setTextDatum(middle_center);
+  display.setTextSize(5);
+  display.setTextColor(UI_GREEN, UI_PANEL);
+  display.drawString(String(r.passes[i]), 178, 68);
+  display.setTextDatum(bottom_center);
+  display.setTextSize(1);
+  display.setTextColor(UI_TEXT, UI_PANEL);
+  display.drawString("Sessao gravada", 178, 108);
 }
 
 void startBleMouse() {
@@ -4384,10 +4698,7 @@ void processVoiceAiScreen() {
 
 void drawScreen() {
   auto& display = M5.Display;
-  const bool portrait = screen == Screen::TEAM_CATTLE_LIMIT ||
-                        screen == Screen::TEAM_CATTLE_COUNTER ||
-                        screen == Screen::TEAM_CATTLE_RESET_CONFIRM ||
-                        screen == Screen::MOUSE ||
+  const bool portrait = screen == Screen::MOUSE ||
                         screen == Screen::VOICE_AI;
   display.setRotation(portrait ? 0 : 3);
   display.startWrite();
@@ -4395,7 +4706,7 @@ void drawScreen() {
   static Screen lastRenderedScreen = (Screen)255;
   static bool lastRenderedPortrait = false;
 
-  if (forceFullRedraw || screen != lastRenderedScreen || portrait != lastRenderedPortrait) {
+  if (forceFullRedraw || screen != lastRenderedScreen || portrait != lastRenderedPortrait || !isMenuScreen(screen)) {
     display.fillScreen(UI_BG);
     forceFullRedraw = false;
     lastRenderedScreen = screen;
@@ -5152,31 +5463,92 @@ void loop() {
     return;
   }
 
-  const bool cattleScreen = screen == Screen::TEAM_CATTLE_COUNTER || screen == Screen::TEAM_CATTLE_RESET_CONFIRM;
-  const bool trainingActiveScreen = screen == Screen::TEAM_TRAIN_ACTIVE;
+  // Team Penning: BOIS SORTEADOS
+  if (screen == Screen::TEAM_CATTLE_COUNTER) {
+    if (M5.BtnA.wasPressed()) {
+      teamAPressedAt = millis();
+      teamAHoldTriggered = false;
+    }
+    if (M5.BtnA.isPressed() && !teamAHoldTriggered && millis() - teamAPressedAt >= 900) {
+      teamAHoldTriggered = true;
+      screen = Screen::TEAM_CATTLE_RESET_CONFIRM;
+      if (M5.Speaker.isEnabled()) M5.Speaker.tone(1400, 40);
+      redraw = true;
+    }
+    if (M5.BtnA.wasReleased() && !teamAHoldTriggered) {
+      markSelectedCattle();
+      if (M5.Speaker.isEnabled()) M5.Speaker.tone(1800, 30);
+    }
+    if (M5.BtnB.wasClicked()) {
+      nextItem();
+      if (M5.Speaker.isEnabled()) M5.Speaker.tone(1200, 20);
+    }
+    if (buttonC.wasClicked() || M5.BtnB.wasHold()) {
+      screen = Screen::TEAM_MENU;
+      selected = 0;
+      redraw = true;
+    }
+    if (redraw) drawScreen();
+    delay(1);
+    return;
+  }
 
-  // B longo mantém o padrão global de voltar. Na confirmação, B curto cancela.
+  // Team Penning: TREINO ATIVO
+  if (screen == Screen::TEAM_TRAIN_ACTIVE) {
+    if (M5.BtnA.wasPressed()) {
+      teamAPressedAt = millis();
+      teamAHoldTriggered = false;
+    }
+    if (M5.BtnA.isPressed() && !teamAHoldTriggered && millis() - teamAPressedAt >= 900) {
+      teamAHoldTriggered = true;
+      screen = Screen::TEAM_TRAIN_END_CONFIRM;
+      if (M5.Speaker.isEnabled()) M5.Speaker.tone(1400, 40);
+      redraw = true;
+    }
+    if (M5.BtnA.wasReleased() && !teamAHoldTriggered) {
+      addTrainingPass();
+      if (M5.Speaker.isEnabled()) M5.Speaker.tone(1800, 30);
+    }
+    if (M5.BtnB.wasClicked()) {
+      nextItem();
+      if (M5.Speaker.isEnabled()) M5.Speaker.tone(1200, 20);
+    }
+    if (buttonC.wasClicked()) {
+      removeTrainingPass();
+      if (M5.Speaker.isEnabled()) M5.Speaker.tone(800, 30);
+    }
+    if (M5.BtnB.wasHold() || buttonC.wasHeld()) {
+      screen = Screen::TEAM_MENU;
+      selected = 1;
+      redraw = true;
+    }
+    if (redraw) drawScreen();
+    delay(1);
+    return;
+  }
+
+  // Team Penning: CONFIRMACOES (Reset da boiada ou Fim do Treino)
+  if (screen == Screen::TEAM_CATTLE_RESET_CONFIRM || screen == Screen::TEAM_TRAIN_END_CONFIRM) {
+    if (M5.BtnA.wasClicked()) {
+      executeSelected();
+    } else if (M5.BtnB.wasClicked() || buttonC.wasClicked() || M5.BtnB.wasHold()) {
+      goBack();
+    }
+    if (redraw) drawScreen();
+    delay(1);
+    return;
+  }
+
+  // B longo mantem o padrao global de voltar.
   if (M5.BtnB.wasHold()) {
     goBack();
   } else if (M5.BtnB.wasClicked()) {
-    if (screen == Screen::TEAM_CATTLE_RESET_CONFIRM || screen == Screen::TEAM_TRAIN_END_CONFIRM) goBack();
-    else nextItem();
+    nextItem();
   }
 
-  if (cattleScreen || trainingActiveScreen) {
-    if (M5.BtnA.wasPressed()) { teamAPressedAt = millis(); teamAHoldTriggered = false; }
-    if (M5.BtnA.isPressed() && !teamAHoldTriggered && millis() - teamAPressedAt >= TEAM_A_HOLD_MS) {
-      teamAHoldTriggered = true;
-      if (screen == Screen::TEAM_CATTLE_COUNTER) screen = Screen::TEAM_CATTLE_RESET_CONFIRM;
-      else if (screen == Screen::TEAM_TRAIN_ACTIVE) screen = Screen::TEAM_TRAIN_END_CONFIRM;
-      redraw = true;
-    }
-    if (M5.BtnA.wasReleased() && !teamAHoldTriggered) executeSelected();
-  } else if (M5.BtnA.wasClicked()) executeSelected();
+  if (M5.BtnA.wasClicked()) executeSelected();
 
-  if (buttonC.wasHeld() && screen == Screen::TEAM_TRAIN_ACTIVE) {
-    removeTrainingPass();
-  } else if (buttonC.wasHeld()) {
+  if (buttonC.wasHeld()) {
     M5.Display.fillScreen(UI_BG);
     M5.Display.setTextDatum(middle_center);
     M5.Display.setTextColor(UI_TEXT, UI_BG);
@@ -5184,7 +5556,11 @@ void loop() {
     delay(250);
     M5.Power.powerOff();
   } else if (buttonC.wasClicked()) {
-    previousItem();
+    if (screen == Screen::TEAM_TRAIN_COUNT || screen == Screen::TEAM_TRAIN_SELECT_HORSE || screen == Screen::TEAM_CATTLE_LIMIT || screen == Screen::TEAM_TRAIN_SUMMARY || screen == Screen::TEAM_TRAIN_HISTORY_DETAIL) {
+      goBack();
+    } else {
+      previousItem();
+    }
   }
 
   static bool toastWasVisible = false;
