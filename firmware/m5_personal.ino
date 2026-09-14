@@ -10,7 +10,7 @@
 #include <time.h>
 #include <sys/time.h>
 #include "M5StickBleMouse.h"
-#include "GestureAI.h"
+// Voice AI Module enabled
 
 // ============================================================
 // M5 PERSONAL - MODULO IR v0.3 CORRIGIDO
@@ -86,7 +86,7 @@ enum class Screen : uint8_t {
   SETTINGS_CLOCK,
   SETTINGS_SLEEP,
   MOUSE,
-  GESTURE_AI
+  VOICE_AI
 };
 
 enum class TvProtocol : uint8_t {
@@ -388,18 +388,28 @@ void updateMouseSearchingDots();
 void updateMouseCrosshair(float vx, float vy, uint16_t ballColor);
 void startBleMouse();
 
-void drawGestureScreen();
-void processGestureScreen();
-void initGestureScreen();
+enum class VoiceState : uint8_t {
+  IDLE,
+  LISTENING,
+  THINKING,
+  RESULT
+};
+
+VoiceState voiceState = VoiceState::IDLE;
+String voiceActiveAgent = "IA Geral";
+String voiceTranscription = "";
+String voiceResultTitle = "";
+String voiceResultBody = "";
+int voiceScrollLine = 0;
+uint8_t voiceWavePhase = 0;
+uint32_t voiceAnimTimer = 0;
+
+void drawVoiceAiScreen();
+void processVoiceAiScreen();
+void initVoiceAiScreen();
 void playWandChime();
 void playFailSound();
-void executeGestureAction(GestureType type);
-
-GestureRecognizer gestureRecognizer;
-GestureResult lastGestureResult;
-bool gestureHasResult = false;
-uint32_t gestureResultUntil = 0;
-int lastGestureCanvasPoints = 0;
+void drawWrappedText(int x, int y, int maxW, int maxLines, int startLine, const String& text, uint16_t color);
 
 M5StickBleMouse bleMouse;
 bool bleMouseStarted = false;
@@ -3203,8 +3213,8 @@ void drawGridButton(uint8_t index, int x, int y, int w, int h,
 
 void drawMain() {
   drawTitle("M5 PERSONAL");
-  const char* labels[] = {"Controle IR", "Wi-Fi Hub", "Air Mouse", "Gestos IA", "Team Penning", "Ajustes"};
-  const char* notes[]  = {"TV e ar-condicionado", "Redes e controle web", "Apontador Bluetooth", "Varinha magica 3D", "Contagem e treinos", "Tela, relogio, repouso"};
+  const char* labels[] = {"Controle IR", "Wi-Fi Hub", "Air Mouse", "Agente IA", "Team Penning", "Ajustes"};
+  const char* notes[]  = {"TV e ar-condicionado", "Redes e controle web", "Apontador Bluetooth", "Comando de voz no PC", "Contagem e treinos", "Tela, relogio, repouso"};
   const char* badges[] = {"IR", "WF", "MS", "IA", "TP", "CF"};
   const uint16_t badgeColors[] = {UI_ORANGE, UI_CYAN, UI_GREEN, UI_PURPLE, UI_YELLOW, UI_MUTED};
 
@@ -3770,73 +3780,62 @@ void playFailSound() {
   }
 }
 
-void executeGestureAction(GestureType type) {
-  switch (type) {
-    case GESTURE_CIRCLE:
-      sendTvCommand(TV_POWER);
-      playWandChime();
-      break;
-    case GESTURE_CHECK_V:
-      sendTvCommand(TV_MUTE);
-      playWandChime();
-      break;
-    case GESTURE_SWIPE_UP:
-    case GESTURE_ROLL_CW:
-      sendTvCommand(TV_VOL_UP);
-      playWandChime();
-      break;
-    case GESTURE_SWIPE_DOWN:
-    case GESTURE_ROLL_CCW:
-      sendTvCommand(TV_VOL_DOWN);
-      playWandChime();
-      break;
-    case GESTURE_SWIPE_RIGHT:
-      sendTvCommand(TV_CH_UP);
-      playWandChime();
-      break;
-    case GESTURE_SWIPE_LEFT:
-      sendTvCommand(TV_CH_DOWN);
-      playWandChime();
-      break;
-    case GESTURE_ZIGZAG: {
-      AcDevice& device = airConditioners[activeAc];
-      device.state.power = !device.state.power;
-      sendAcState(device.state.power ? "AR LIGADO" : "AR DESLIGADO");
-      saveAcState(activeAc);
-      playWandChime();
-      break;
-    }
-    case GESTURE_TRIANGLE: {
-      AcDevice& device = airConditioners[activeAc];
-      device.state.turbo = !device.state.turbo;
-      sendAcState(device.state.turbo ? "TURBO ON" : "TURBO OFF");
-      saveAcState(activeAc);
-      playWandChime();
-      break;
-    }
-    case GESTURE_THRUST:
-      sendTvCommand(TV_OK);
-      playWandChime();
-      break;
-    default:
-      playFailSound();
-      break;
-  }
-}
-
-void initGestureScreen() {
-  if (!M5.Imu.isEnabled()) {
-    M5.Imu.begin();
-    if (!M5.Imu.isEnabled()) {
-      M5.Imu.begin(&M5.In_I2C, M5.getBoard());
-    }
-  }
-  gestureHasResult = false;
-  lastGestureCanvasPoints = 0;
+void initVoiceAiScreen() {
+  voiceState = VoiceState::IDLE;
+  voiceScrollLine = 0;
+  voiceTranscription = "";
+  voiceResultTitle = "";
+  voiceResultBody = "";
+  Serial.println("VOICE_READY");
   redraw = true;
 }
 
-void drawGestureScreen() {
+void drawWrappedText(int x, int y, int maxW, int maxLines, int startLine, const String& text, uint16_t color) {
+  auto& d = M5.Display;
+  d.setTextSize(1);
+  d.setTextColor(color, UI_BG);
+  d.setTextDatum(top_left);
+
+  int curX = x;
+  int curY = y;
+  int lineIdx = 0;
+  int drawnLines = 0;
+  String word = "";
+
+  for (size_t i = 0; i <= text.length(); ++i) {
+    char c = (i < text.length()) ? text[i] : ' ';
+    if (c == ' ' || c == '\n' || i == text.length()) {
+      if (word.length() > 0) {
+        int wWidth = d.textWidth(word);
+        if (curX + wWidth > x + maxW && curX > x) {
+          curX = x;
+          lineIdx++;
+          if (lineIdx >= startLine && drawnLines < maxLines) {
+            curY += 12;
+            drawnLines++;
+          }
+        }
+        if (lineIdx >= startLine && drawnLines < maxLines) {
+          d.drawString(word, curX, curY);
+        }
+        curX += wWidth + d.textWidth(" ");
+        word = "";
+      }
+      if (c == '\n') {
+        curX = x;
+        lineIdx++;
+        if (lineIdx >= startLine && drawnLines < maxLines) {
+          curY += 12;
+          drawnLines++;
+        }
+      }
+    } else {
+      word += c;
+    }
+  }
+}
+
+void drawVoiceAiScreen() {
   auto& d = M5.Display;
   d.fillRect(0, 0, 135, 240, UI_BG);
 
@@ -3850,110 +3849,144 @@ void drawGestureScreen() {
   d.drawString("IA", 18, 16);
   d.setTextDatum(middle_left);
   d.setTextColor(UI_TEXT, UI_PANEL);
-  d.drawString("VARINHA", 32, 16);
+  d.drawString("AGENTE IA", 31, 16);
 
-  // Icones de Wi-Fi e Bateria compactos no topo da tela
-  drawWifiIcon(84, 10, WiFi.status() == WL_CONNECTED);
+  // Wi-Fi e Bateria compactos no topo
+  drawWifiIcon(86, 10, WiFi.status() == WL_CONNECTED);
   int batLevel = constrain(M5.Power.getBatteryLevel(), 0, 100);
-  d.drawRoundRect(102, 10, 18, 9, 2, UI_BORDER);
-  d.fillRect(120, 12, 2, 5, UI_BORDER);
+  d.drawRoundRect(104, 10, 18, 9, 2, UI_BORDER);
+  d.fillRect(122, 12, 2, 5, UI_BORDER);
   int bFill = map(batLevel, 0, 100, 0, 14);
-  if (bFill > 0) d.fillRect(104, 12, bFill, 5, batLevel > 20 ? UI_GREEN : UI_RED);
+  if (bFill > 0) d.fillRect(106, 12, bFill, 5, batLevel > 20 ? UI_GREEN : UI_RED);
 
-  // Barra de status de gesto
-  d.fillRoundRect(6, 32, 123, 20, 3, UI_PANEL_ALT);
-  d.drawRoundRect(6, 32, 123, 20, 3, UI_BORDER);
-  d.setTextDatum(middle_center);
-  if (gestureRecognizer.isRecording()) {
-    d.setTextColor(UI_YELLOW, UI_PANEL_ALT);
-    d.drawString("DESENHANDO...", 67, 42);
-  } else if (gestureHasResult && lastGestureResult.type != GESTURE_NONE) {
-    d.setTextColor(lastGestureResult.color, UI_PANEL_ALT);
-    d.drawString(lastGestureResult.name, 67, 42);
-  } else {
-    d.setTextColor(UI_CYAN, UI_PANEL_ALT);
-    d.drawString("SEGURE [ A ]", 67, 42);
-  }
+  // Pílula do Agente Ativo
+  d.fillRoundRect(6, 31, 123, 19, 3, UI_PANEL_ALT);
+  d.drawRoundRect(6, 31, 123, 19, 3, UI_BORDER);
+  d.setTextDatum(middle_left);
+  d.setTextSize(1);
+  d.setTextColor(UI_MUTED, UI_PANEL_ALT);
+  d.drawString("Alvo:", 12, 41);
+  d.setTextColor(UI_CYAN, UI_PANEL_ALT);
+  d.drawString(voiceActiveAgent, 44, 41);
 
-  // Canvas de desenho (Centro em 67, 109)
-  d.drawRoundRect(6, 56, 123, 106, 5, UI_BORDER);
-  d.fillRect(7, 57, 121, 104, UI_BG);
+  // Card Principal (x: 6..129, y: 53..168, h: 115)
+  d.fillRoundRect(6, 53, 123, 116, 5, UI_PANEL);
+  d.drawRoundRect(6, 53, 123, 116, 5, UI_BORDER);
 
-  if (!gestureRecognizer.isRecording() && !gestureHasResult) {
-    // Reticulo sutil central
-    d.drawFastHLine(63, 109, 9, UI_BORDER);
-    d.drawFastVLine(67, 105, 9, UI_BORDER);
+  if (voiceState == VoiceState::IDLE) {
+    // Ícone de Microfone Estilizado
+    d.drawRoundRect(60, 65, 15, 22, 7, UI_CYAN);
+    d.fillRect(63, 68, 9, 16, UI_CYAN);
+    d.drawFastHLine(56, 88, 23, UI_BORDER);
+    d.drawFastVLine(67, 88, 6, UI_BORDER);
+    d.drawFastHLine(61, 94, 13, UI_BORDER);
 
-    // Guia rapido de magias
-    d.setTextDatum(middle_left);
-    d.setTextSize(1);
-    d.setTextColor(UI_YELLOW, UI_BG);
-    d.drawString("O  Circulo -> TV Pwr", 12, 70);
-    d.setTextColor(UI_GREEN, UI_BG);
-    d.drawString("V  Letra V -> Mudo", 12, 86);
-    d.setTextColor(UI_CYAN, UI_BG);
-    d.drawString("Z  Letra Z -> Ar Pwr", 12, 102);
-    d.setTextColor(UI_ORANGE, UI_BG);
-    d.drawString("^v Swipes  -> Vol/Canal", 12, 118);
-    d.setTextColor(UI_PURPLE, UI_BG);
-    d.drawString("~  Girar   -> Vol +/-", 12, 134);
-    d.setTextColor(UI_MUTED, UI_BG);
-    d.drawString("-> Estocar -> TV OK", 12, 149);
-  } else if (gestureHasResult) {
     d.setTextDatum(middle_center);
-    d.setTextSize(3);
-    d.setTextColor(lastGestureResult.color, UI_BG);
-    d.drawString(lastGestureResult.symbol, 67, 85);
-
-    int conf = constrain((int)lastGestureResult.confidence, 0, 100);
-    d.drawRoundRect(27, 106, 82, 8, 2, UI_BORDER);
-    int barW = (conf * 78) / 100;
-    if (barW > 0) d.fillRect(29, 108, barW, 4, lastGestureResult.color);
-
     d.setTextSize(1);
-    d.setTextColor(UI_MUTED, UI_BG);
-    d.drawString(String(conf) + "% confianca", 67, 123);
-    d.setTextColor(UI_TEXT, UI_BG);
-    d.drawString(lastGestureResult.action, 67, 142);
+    d.setTextColor(UI_YELLOW, UI_PANEL);
+    d.drawString("SEGURE [ A ] E FALE", 67, 106);
+
+    // Exemplos de comandos
+    d.setTextDatum(middle_left);
+    d.setTextColor(UI_MUTED, UI_PANEL);
+    d.drawString("Diga por voz:", 14, 122);
+    d.setTextColor(UI_CYAN, UI_PANEL);
+    d.drawString("• 'abrir vscode'", 14, 134);
+    d.drawString("• 'abrir chrome'", 14, 145);
+    d.setTextColor(UI_GREEN, UI_PANEL);
+    d.drawString("• 'pergunta livre...'", 14, 157);
+
+  } else if (voiceState == VoiceState::LISTENING) {
+    d.setTextDatum(middle_center);
+    d.setTextSize(1);
+    d.setTextColor(UI_YELLOW, UI_PANEL);
+    d.drawString("OUVINDO VOZ...", 67, 68);
+
+    // Onda Sonora Animada (VU meter com 7 barras)
+    constexpr int barXs[] = {25, 38, 51, 64, 77, 90, 103};
+    constexpr int baseH[] = {10, 22, 38, 50, 36, 20, 12};
+    for (int b = 0; b < 7; ++b) {
+      int h = baseH[b] + (int)(sinf((voiceWavePhase + b * 45) * 0.08f) * 12.0f);
+      h = constrain(h, 4, 52);
+      int by = 118 - h / 2;
+      uint16_t bCol = (b == 3) ? UI_YELLOW : ((b % 2 == 0) ? UI_CYAN : UI_GREEN);
+      d.fillRoundRect(barXs[b], by, 7, h, 2, bCol);
+    }
+
+    d.setTextDatum(middle_center);
+    d.setTextColor(UI_MUTED, UI_PANEL);
+    d.drawString("Fale seu comando", 67, 154);
+
+  } else if (voiceState == VoiceState::THINKING) {
+    d.setTextDatum(middle_center);
+    d.setTextSize(1);
+    d.setTextColor(UI_CYAN, UI_PANEL);
+    d.drawString("PROCESSANDO IA...", 67, 72);
+
+    // Barra de progresso animada
+    int pW = ((millis() / 30) % 80) + 10;
+    d.drawRoundRect(27, 90, 82, 8, 2, UI_BORDER);
+    d.fillRect(29, 92, pW, 4, UI_CYAN);
+
+    d.setTextColor(UI_MUTED, UI_PANEL);
+    d.drawString("Aguardando resposta", 67, 114);
+    if (voiceTranscription.length() > 0) {
+      d.setTextColor(UI_YELLOW, UI_PANEL);
+      d.drawString("\"" + voiceTranscription.substring(0, 16) + "...\"", 67, 138);
+    }
+
+  } else if (voiceState == VoiceState::RESULT) {
+    // Exibe o comando ouvido
+    d.setTextDatum(top_left);
+    d.setTextSize(1);
+    d.setTextColor(UI_YELLOW, UI_PANEL);
+    String qLine = "> " + voiceTranscription;
+    if (qLine.length() > 18) qLine = qLine.substring(0, 16) + "..";
+    d.drawString(qLine, 12, 58);
+
+    // Título do resultado (ex: AGENTE ATIVADO / RESPOSTA IA)
+    d.setTextColor(UI_CYAN, UI_PANEL);
+    d.drawString(voiceResultTitle, 12, 70);
+    d.drawFastHLine(12, 80, 111, UI_BORDER);
+
+    // Corpo da resposta com quebra automática de linha
+    drawWrappedText(12, 84, 111, 6, voiceScrollLine, voiceResultBody, UI_TEXT);
+
+    // Indicador de rolagem se houver texto
+    d.setTextDatum(bottom_right);
+    d.setTextColor(UI_MUTED, UI_PANEL);
+    d.drawString("[B] Rolar", 124, 166);
   }
 
-  // Painel de instrucoes
-  d.fillRoundRect(6, 166, 123, 50, 4, UI_PANEL);
-  d.drawRoundRect(6, 166, 123, 50, 4, UI_BORDER);
+  // Painel de Comandos e Ajuda (y: 173..218)
+  d.fillRoundRect(6, 173, 123, 44, 4, UI_PANEL);
+  d.drawRoundRect(6, 173, 123, 44, 4, UI_BORDER);
   d.setTextDatum(middle_left);
   d.setTextSize(1);
 
-  d.fillRoundRect(12, 172, 12, 12, 2, UI_ORANGE);
+  d.fillRoundRect(12, 178, 12, 11, 2, UI_ORANGE);
   d.setTextColor(UI_BG, UI_ORANGE);
   d.setTextDatum(middle_center);
-  d.drawString("A", 18, 178);
+  d.drawString("A", 18, 183);
   d.setTextDatum(middle_left);
   d.setTextColor(UI_TEXT, UI_PANEL);
-  d.drawString("Segure e mova", 30, 178);
+  d.drawString("Segure p/ Falar", 30, 183);
 
-  d.fillRoundRect(12, 188, 12, 12, 2, UI_CYAN);
+  d.fillRoundRect(12, 194, 12, 11, 2, UI_CYAN);
   d.setTextColor(UI_BG, UI_CYAN);
   d.setTextDatum(middle_center);
-  d.drawString("A", 18, 194);
-  d.setTextDatum(middle_left);
-  d.setTextColor(UI_TEXT, UI_PANEL);
-  d.drawString("Solte p/ disparar", 30, 194);
-
-  d.fillRoundRect(12, 203, 12, 10, 2, UI_MUTED);
-  d.setTextColor(UI_BG, UI_MUTED);
-  d.setTextDatum(middle_center);
-  d.drawString("B", 18, 208);
+  d.drawString("B", 18, 199);
   d.setTextDatum(middle_left);
   d.setTextColor(UI_MUTED, UI_PANEL);
-  d.drawString("Limpar resultado", 30, 208);
+  d.drawString("Rolar / Nova fala", 30, 199);
 
-  // Rodape
+  // Rodapé
   d.setTextDatum(middle_center);
   d.setTextColor(UI_MUTED, UI_BG);
-  d.drawString("C: voltar ao menu", 67, 228);
+  d.drawString("C: voltar ao menu", 67, 229);
 }
 
-void processGestureScreen() {
+void processVoiceAiScreen() {
   lastUserActivityAt = millis();
 
   if (buttonC.wasClicked() || buttonC.wasHeld()) {
@@ -3961,63 +3994,100 @@ void processGestureScreen() {
     return;
   }
 
+  // Botão B: se estiver em RESULT, rola o texto ou limpa
   if (M5.BtnB.wasClicked()) {
-    gestureHasResult = false;
-    redraw = true;
+    if (voiceState == VoiceState::RESULT) {
+      voiceScrollLine += 2;
+      if (voiceScrollLine > 20) voiceScrollLine = 0;
+      redraw = true;
+    } else {
+      voiceState = VoiceState::IDLE;
+      redraw = true;
+    }
   }
 
-  // Pressionou Botao A: inicia gravacao da trajetoria
+  // Pressionou Botão A: Inicia gravação Push-to-Talk
   if (M5.BtnA.wasPressed()) {
-    gestureRecognizer.startRecording();
-    gestureHasResult = false;
-    lastGestureCanvasPoints = 0;
+    voiceState = VoiceState::LISTENING;
+    voiceTranscription = "";
+    voiceResultTitle = "";
+    voiceResultBody = "";
+    voiceScrollLine = 0;
+    voiceWavePhase = 0;
+    Serial.println("VOICE_START");
+    if (M5.Speaker.isEnabled()) M5.Speaker.tone(1200, 40);
     redraw = true;
   }
 
-  // Segurando Botao A: amostra IMU e desenha rastro visual
+  // Segurando Botão A: anima as ondas de áudio na tela
   if (M5.BtnA.isPressed()) {
-    float gx = 0, gy = 0, gz = 0, ax = 0, ay = 0, az = 0;
-    if (M5.Imu.getGyro(&gx, &gy, &gz) && M5.Imu.getAccel(&ax, &ay, &az) &&
-        isfinite(gx) && isfinite(gy) && isfinite(gz)) {
-      gestureRecognizer.sample(gx, gy, gz, ax, ay, az, millis());
+    voiceWavePhase = (voiceWavePhase + 1) % 360;
+    if (millis() - voiceAnimTimer > 40) {
+      voiceAnimTimer = millis();
+      redraw = true;
+    }
+  }
 
-      int count = gestureRecognizer.getRawPointCount();
-      if (count > lastGestureCanvasPoints && count >= 2) {
-        auto& d = M5.Display;
-        d.startWrite();
-        const GesturePoint* pts = gestureRecognizer.getRawPoints();
-        for (int i = max(1, lastGestureCanvasPoints); i < count; ++i) {
-          // Escala calibrada: 1 grau de rotacao = 1.15 pixels no canvas
-          int x1 = 67 + constrain((int)(pts[i - 1].x * 1.15f), -52, 52);
-          int y1 = 109 + constrain((int)(pts[i - 1].y * 1.15f), -44, 44);
-          int x2 = 67 + constrain((int)(pts[i].x * 1.15f), -52, 52);
-          int y2 = 109 + constrain((int)(pts[i].y * 1.15f), -44, 44);
-          d.drawLine(x1, y1, x2, y2, UI_SELECTED);
-          d.fillCircle(x2, y2, 2, UI_YELLOW);
+  // Soltou Botão A: Envia parada e entra no estado de processamento
+  if (M5.BtnA.wasReleased()) {
+    voiceState = VoiceState::THINKING;
+    Serial.println("VOICE_STOP");
+    if (M5.Speaker.isEnabled()) M5.Speaker.tone(1600, 40);
+    redraw = true;
+  }
+
+  // Lê respostas seriais enviadas pela ponte no PC
+  while (Serial.available()) {
+    String line = Serial.readStringUntil('\n');
+    line.trim();
+    if (line.length() == 0) continue;
+
+    // Parse simples e seguro de JSON recebido
+    if (line.startsWith("{") && line.endsWith("}")) {
+      int typeIdx = line.indexOf("\"type\":\"");
+      if (typeIdx != -1) {
+        int typeEnd = line.indexOf("\"", typeIdx + 8);
+        String msgType = line.substring(typeIdx + 8, typeEnd);
+
+        if (msgType == "READY") {
+          voiceActiveAgent = "IA Geral";
+          redraw = true;
+        } else if (msgType == "TRANS") {
+          int tIdx = line.indexOf("\"text\":\"");
+          if (tIdx != -1) {
+            int tEnd = line.indexOf("\"", tIdx + 8);
+            voiceTranscription = line.substring(tIdx + 8, tEnd);
+            redraw = true;
+          }
+        } else if (msgType == "STATUS") {
+          // Status temporário
+          redraw = true;
+        } else if (msgType == "RESULT") {
+          // Extrai agent, title, body
+          int aIdx = line.indexOf("\"agent\":\"");
+          if (aIdx != -1) {
+            int aEnd = line.indexOf("\"", aIdx + 9);
+            voiceActiveAgent = line.substring(aIdx + 9, aEnd);
+          }
+          int titIdx = line.indexOf("\"title\":\"");
+          if (titIdx != -1) {
+            int titEnd = line.indexOf("\"", titIdx + 9);
+            voiceResultTitle = line.substring(titIdx + 9, titEnd);
+          }
+          int bIdx = line.indexOf("\"body\":\"");
+          if (bIdx != -1) {
+            int bEnd = line.lastIndexOf("\"");
+            if (bEnd > bIdx + 8) {
+              voiceResultBody = line.substring(bIdx + 8, bEnd);
+            }
+          }
+          voiceState = VoiceState::RESULT;
+          voiceScrollLine = 0;
+          playWandChime();
+          redraw = true;
         }
-        d.endWrite();
-        lastGestureCanvasPoints = count;
       }
     }
-  }
-
-  // Soltou Botao A: classifica o gesto e executa a acao!
-  if (M5.BtnA.wasReleased()) {
-    lastGestureResult = gestureRecognizer.finishAndClassify();
-    gestureHasResult = true;
-    gestureResultUntil = millis() + 4500;
-    if (lastGestureResult.type != GESTURE_NONE) {
-      executeGestureAction(lastGestureResult.type);
-    } else {
-      playFailSound();
-    }
-    redraw = true;
-  }
-
-  // Volta ao guia de magias apos alguns segundos
-  if (gestureHasResult && millis() > gestureResultUntil) {
-    gestureHasResult = false;
-    redraw = true;
   }
 }
 
@@ -4027,7 +4097,7 @@ void drawScreen() {
                         screen == Screen::TEAM_CATTLE_COUNTER ||
                         screen == Screen::TEAM_CATTLE_RESET_CONFIRM ||
                         screen == Screen::MOUSE ||
-                        screen == Screen::GESTURE_AI;
+                        screen == Screen::VOICE_AI;
   display.setRotation(portrait ? 0 : 3);
   display.startWrite();
 
@@ -4076,7 +4146,7 @@ void drawScreen() {
     case Screen::SETTINGS_CLOCK: drawSettingsClock(); break;
     case Screen::SETTINGS_SLEEP: drawSettingsSleep(); break;
     case Screen::MOUSE:          drawMouseScreen(); break;
-    case Screen::GESTURE_AI:     drawGestureScreen(); break;
+    case Screen::VOICE_AI:     drawVoiceAiScreen(); break;
   }
 
   if (!portrait) drawFooter();
@@ -4124,7 +4194,7 @@ uint8_t itemCount() {
     case Screen::SETTINGS_CLOCK: return 1;
     case Screen::SETTINGS_SLEEP: return 1;
     case Screen::MOUSE: return 1;
-    case Screen::GESTURE_AI: return 1;
+    case Screen::VOICE_AI: return 1;
   }
   return 1;
 }
@@ -4194,7 +4264,7 @@ void goBack() {
       redraw = true;
       return;
 
-    case Screen::GESTURE_AI:
+    case Screen::VOICE_AI:
       screen = Screen::MAIN;
       selected = 3;
       redraw = true;
@@ -4314,8 +4384,8 @@ void executeSelected() {
         mouseSmoothDy = 0.0f;
       }
       else if (selected == 3) {
-        screen = Screen::GESTURE_AI;
-        initGestureScreen();
+        screen = Screen::VOICE_AI;
+        initVoiceAiScreen();
       }
       else if (selected == 4) screen = Screen::TEAM_MENU;
       else screen = Screen::SETTINGS_MENU;
@@ -4618,7 +4688,7 @@ void setup() {
 }
 
 void loop() {
-  if (screen != Screen::MOUSE && screen != Screen::GESTURE_AI) {
+  if (screen != Screen::MOUSE && screen != Screen::VOICE_AI) {
     if (webServerRunning) webServer.handleClient();
     processWifiConnection();
     processWifiMaintenance();
@@ -4626,22 +4696,22 @@ void loop() {
 
   M5.update();
   buttonC.update();
-  if (screen != Screen::MOUSE && screen != Screen::GESTURE_AI) processWeatherAndClock();
+  if (screen != Screen::MOUSE && screen != Screen::VOICE_AI) processWeatherAndClock();
 
   static bool previousCPressed = false;
   const bool cPressedNow = buttonC.stablePressed;
   const bool anyButtonPressed = M5.BtnA.wasPressed() || M5.BtnB.wasPressed() || (cPressedNow && !previousCPressed);
   previousCPressed = cPressedNow;
   const DisplayIdleState idleBeforeInput = displayIdleState;
-  if (screen == Screen::MOUSE || screen == Screen::GESTURE_AI) lastUserActivityAt = millis();
+  if (screen == Screen::MOUSE || screen == Screen::VOICE_AI) lastUserActivityAt = millis();
   processDisplayIdle(anyButtonPressed);
   if (idleBeforeInput != DisplayIdleState::ACTIVE || displayIdleState != DisplayIdleState::ACTIVE) {
     delay(10);
     return;
   }
 
-  if (screen == Screen::GESTURE_AI) {
-    processGestureScreen();
+  if (screen == Screen::VOICE_AI) {
+    processVoiceAiScreen();
     if (redraw) drawScreen();
     delay(1);
     return;
