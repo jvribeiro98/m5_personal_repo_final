@@ -411,9 +411,21 @@ int voiceScrollLine = 0;
 uint8_t voiceWavePhase = 0;
 uint32_t voiceAnimTimer = 0;
 
+static constexpr size_t VOICE_SAMPLE_RATE = 16000;
+static constexpr size_t VOICE_MAX_SECS = 4;
+static constexpr size_t VOICE_BUFFER_BYTES = VOICE_SAMPLE_RATE * VOICE_MAX_SECS * sizeof(int16_t);
+static int16_t* voiceAudioBuffer = nullptr;
+static size_t voiceRecordedSamples = 0;
+static String pcBridgeIp = "192.168.0.2";
+static int pcBridgePort = 5000;
+static bool voiceMicRecordingActive = false;
+
 void drawVoiceAiScreen();
 void processVoiceAiScreen();
 void initVoiceAiScreen();
+void startVoiceRecording();
+void stopVoiceRecordingAndSend();
+void parseVoiceAiResponse(const String& line);
 void playWandChime();
 void playFailSound();
 void drawWrappedText(int x, int y, int maxW, int maxLines, int startLine, const String& text, uint16_t color);
@@ -4336,8 +4348,111 @@ void initVoiceAiScreen() {
   voiceTranscription = "";
   voiceResultTitle = "";
   voiceResultBody = "";
+  if (!voiceAudioBuffer) {
+    voiceAudioBuffer = (int16_t*)heap_caps_malloc(VOICE_BUFFER_BYTES, MALLOC_CAP_8BIT);
+    if (!voiceAudioBuffer) {
+      voiceAudioBuffer = (int16_t*)malloc(VOICE_BUFFER_BYTES);
+    }
+  }
+  voiceRecordedSamples = 0;
+  voiceMicRecordingActive = false;
   Serial.println("VOICE_READY");
   redraw = true;
+}
+
+void parseVoiceAiResponse(const String& line) {
+  if (line.startsWith("{") && line.endsWith("}")) {
+    int titIdx = line.indexOf("\"title\":\"");
+    if (titIdx != -1) {
+      int titEnd = line.indexOf("\"", titIdx + 9);
+      voiceResultTitle = line.substring(titIdx + 9, titEnd);
+    }
+    int aIdx = line.indexOf("\"agent\":\"");
+    if (aIdx != -1) {
+      int aEnd = line.indexOf("\"", aIdx + 9);
+      voiceActiveAgent = line.substring(aIdx + 9, aEnd);
+    }
+    int tIdx = line.indexOf("\"text\":\"");
+    if (tIdx != -1) {
+      int tEnd = line.indexOf("\"", tIdx + 8);
+      voiceTranscription = line.substring(tIdx + 8, tEnd);
+    }
+    int bIdx = line.indexOf("\"body\":\"");
+    if (bIdx != -1) {
+      int bEnd = line.lastIndexOf("\"");
+      if (bEnd > bIdx + 8) {
+        voiceResultBody = line.substring(bIdx + 8, bEnd);
+      }
+    }
+    voiceState = VoiceState::RESULT;
+    voiceScrollLine = 0;
+    playWandChime();
+    redraw = true;
+  }
+}
+
+void startVoiceRecording() {
+  if (voiceState == VoiceState::LISTENING) return;
+  voiceState = VoiceState::LISTENING;
+  voiceRecordedSamples = 0;
+  voiceTranscription = "";
+  voiceResultTitle = "";
+  voiceResultBody = "";
+  voiceScrollLine = 0;
+  voiceWavePhase = 0;
+  if (M5.Speaker.isEnabled()) M5.Speaker.tone(1200, 50);
+  delay(60);
+  M5.Speaker.end();
+  M5.Mic.begin();
+  voiceMicRecordingActive = true;
+  redraw = true;
+}
+
+void stopVoiceRecordingAndSend() {
+  if (voiceState != VoiceState::LISTENING) return;
+  voiceMicRecordingActive = false;
+  M5.Mic.end();
+  M5.Speaker.begin();
+  if (M5.Speaker.isEnabled()) M5.Speaker.tone(1600, 50);
+  voiceState = VoiceState::THINKING;
+  redraw = true;
+
+  if (voiceRecordedSamples < 1600) {
+    voiceResultTitle = "MUITO CURTO";
+    voiceResultBody = "Clique [A], fale sua frase e clique [A] novamente.";
+    voiceState = VoiceState::RESULT;
+    redraw = true;
+    return;
+  }
+
+  Serial.println("VOICE_STOP");
+
+  bool sentOk = false;
+  if (WiFi.status() == WL_CONNECTED) {
+    HTTPClient http;
+    String url = "http://" + pcBridgeIp + ":" + String(pcBridgePort) + "/audio";
+    http.setConnectTimeout(1800);
+    http.setTimeout(4500);
+    if (http.begin(url)) {
+      http.addHeader("Content-Type", "application/octet-stream");
+      int code = http.POST((uint8_t*)voiceAudioBuffer, voiceRecordedSamples * sizeof(int16_t));
+      if (code == 200) {
+        String resp = http.getString();
+        parseVoiceAiResponse(resp);
+        sentOk = true;
+      } else {
+        Serial.printf("[VOICE] Falha HTTP: %d\n", code);
+      }
+      http.end();
+    }
+  }
+
+  if (!sentOk) {
+    // Fallback via Serial
+    Serial.printf("VOICE_AUDIO %u\n", (unsigned int)(voiceRecordedSamples * sizeof(int16_t)));
+    Serial.write((const uint8_t*)voiceAudioBuffer, voiceRecordedSamples * sizeof(int16_t));
+    Serial.println();
+  }
 }
 
 void drawWrappedText(int x, int y, int maxW, int maxLines, int startLine, const String& text, uint16_t color) {
@@ -4545,8 +4660,14 @@ void processVoiceAiScreen() {
 
   if (buttonC.wasClicked() || buttonC.wasHeld()) {
     if (voiceState == VoiceState::LISTENING) {
-      Serial.println("VOICE_STOP");
+      voiceMicRecordingActive = false;
+      M5.Mic.end();
+      M5.Speaker.begin();
       voiceState = VoiceState::IDLE;
+    }
+    if (voiceAudioBuffer) {
+      free(voiceAudioBuffer);
+      voiceAudioBuffer = nullptr;
     }
     goBack();
     return;
@@ -4560,7 +4681,9 @@ void processVoiceAiScreen() {
       redraw = true;
     } else {
       if (voiceState == VoiceState::LISTENING) {
-        Serial.println("VOICE_STOP");
+        voiceMicRecordingActive = false;
+        M5.Mic.end();
+        M5.Speaker.begin();
       }
       voiceState = VoiceState::IDLE;
       redraw = true;
@@ -4576,121 +4699,85 @@ void processVoiceAiScreen() {
     btnAHeldDown = false;
   }
 
-  // Se segurar o botão por mais de 350ms, entra em modo HOLD (segurar para falar)
+  // Modo segurar (> 350ms)
   if (M5.BtnA.isPressed() && !btnAHeldDown && (millis() - btnAPressTime >= 350)) {
     btnAHeldDown = true;
     if (voiceState != VoiceState::LISTENING) {
-      voiceState = VoiceState::LISTENING;
       voiceRecStartTime = millis();
-      voiceTranscription = "";
-      voiceResultTitle = "";
-      voiceResultBody = "";
-      voiceScrollLine = 0;
-      voiceWavePhase = 0;
-      Serial.println("VOICE_START");
-      if (M5.Speaker.isEnabled()) M5.Speaker.tone(1200, 50);
-      redraw = true;
+      startVoiceRecording();
     }
   }
 
-  // Quando o botão for solto:
+  // Quando soltar o botão:
   if (M5.BtnA.wasReleased()) {
     if (btnAHeldDown) {
-      // Estava segurando e soltou -> finaliza a gravação
       btnAHeldDown = false;
       if (voiceState == VoiceState::LISTENING) {
-        voiceState = VoiceState::THINKING;
-        Serial.println("VOICE_STOP");
-        if (M5.Speaker.isEnabled()) M5.Speaker.tone(1600, 50);
-        redraw = true;
+        stopVoiceRecordingAndSend();
       }
     } else {
-      // Foi um clique rápido (< 350ms) -> funciona como TOGGLE!
+      // Clique rápido (< 350ms) -> Toggle!
       if (voiceState != VoiceState::LISTENING) {
-        voiceState = VoiceState::LISTENING;
         voiceRecStartTime = millis();
-        voiceTranscription = "";
-        voiceResultTitle = "";
-        voiceResultBody = "";
-        voiceScrollLine = 0;
-        voiceWavePhase = 0;
-        Serial.println("VOICE_START");
-        if (M5.Speaker.isEnabled()) M5.Speaker.tone(1200, 50);
-        redraw = true;
+        startVoiceRecording();
       } else {
-        // Já estava gravando -> clique para parar e processar!
-        voiceState = VoiceState::THINKING;
-        Serial.println("VOICE_STOP");
-        if (M5.Speaker.isEnabled()) M5.Speaker.tone(1600, 50);
-        redraw = true;
+        stopVoiceRecordingAndSend();
       }
     }
   }
 
-  // Se estiver gravando (LISTENING)
+  // Gravacao ativa pelo microfone SPM1423 do M5Stick
   if (voiceState == VoiceState::LISTENING) {
+    constexpr size_t CHUNK = 512;
+    if (voiceAudioBuffer && (voiceRecordedSamples + CHUNK <= VOICE_SAMPLE_RATE * VOICE_MAX_SECS)) {
+      if (M5.Mic.record(&voiceAudioBuffer[voiceRecordedSamples], CHUNK, VOICE_SAMPLE_RATE)) {
+        while (M5.Mic.isRecording()) delay(1);
+        voiceRecordedSamples += CHUNK;
+      }
+    }
+
     voiceWavePhase = (voiceWavePhase + 1) % 360;
     if (millis() - voiceAnimTimer > 40) {
       voiceAnimTimer = millis();
       redraw = true;
     }
 
-    // Auto-timeout de segurança após 8.5 segundos gravando
-    if (millis() - voiceRecStartTime >= 8500) {
-      voiceState = VoiceState::THINKING;
-      Serial.println("VOICE_STOP");
-      if (M5.Speaker.isEnabled()) M5.Speaker.tone(1600, 50);
-      redraw = true;
+    // Auto-timeout de segurança após 4.2 segundos
+    if (voiceRecordedSamples >= VOICE_SAMPLE_RATE * VOICE_MAX_SECS || (millis() - voiceRecStartTime >= 4200)) {
+      stopVoiceRecordingAndSend();
     }
   }
 
-  // Lê respostas seriais enviadas pela ponte no PC
+  // Le respostas e configuracoes seriais do PC
   while (Serial.available()) {
     String line = Serial.readStringUntil('\n');
     line.trim();
     if (line.length() == 0) continue;
 
     if (line.startsWith("{") && line.endsWith("}")) {
-      int typeIdx = line.indexOf("\"type\":\"");
-      if (typeIdx != -1) {
-        int typeEnd = line.indexOf("\"", typeIdx + 8);
-        String msgType = line.substring(typeIdx + 8, typeEnd);
-
-        if (msgType == "READY") {
-          voiceActiveAgent = "IA Geral";
-          redraw = true;
-        } else if (msgType == "TRANS") {
-          int tIdx = line.indexOf("\"text\":\"");
-          if (tIdx != -1) {
-            int tEnd = line.indexOf("\"", tIdx + 8);
-            voiceTranscription = line.substring(tIdx + 8, tEnd);
-            redraw = true;
-          }
-        } else if (msgType == "STATUS") {
-          redraw = true;
-        } else if (msgType == "RESULT") {
-          int aIdx = line.indexOf("\"agent\":\"");
-          if (aIdx != -1) {
-            int aEnd = line.indexOf("\"", aIdx + 9);
-            voiceActiveAgent = line.substring(aIdx + 9, aEnd);
-          }
-          int titIdx = line.indexOf("\"title\":\"");
-          if (titIdx != -1) {
-            int titEnd = line.indexOf("\"", titIdx + 9);
-            voiceResultTitle = line.substring(titIdx + 9, titEnd);
-          }
-          int bIdx = line.indexOf("\"body\":\"");
-          if (bIdx != -1) {
-            int bEnd = line.lastIndexOf("\"");
-            if (bEnd > bIdx + 8) {
-              voiceResultBody = line.substring(bIdx + 8, bEnd);
-            }
-          }
-          voiceState = VoiceState::RESULT;
-          voiceScrollLine = 0;
-          playWandChime();
+      if (line.indexOf("\"type\":\"CONFIG\"") != -1) {
+        int ipIdx = line.indexOf("\"ip\":\"");
+        if (ipIdx != -1) {
+          int ipEnd = line.indexOf("\"", ipIdx + 6);
+          pcBridgeIp = line.substring(ipIdx + 6, ipEnd);
+        }
+        int pIdx = line.indexOf("\"port\":");
+        if (pIdx != -1) {
+          pcBridgePort = line.substring(pIdx + 7).toInt();
+        }
+        Serial.printf("[VOICE] PC Bridge configurado: %s:%d\n", pcBridgeIp.c_str(), pcBridgePort);
+      } else if (line.indexOf("\"type\":\"READY\"") != -1) {
+        voiceActiveAgent = "IA Geral";
+        redraw = true;
+      } else if (line.indexOf("\"type\":\"TRANS\"") != -1) {
+        int tIdx = line.indexOf("\"text\":\"");
+        if (tIdx != -1) {
+          int tEnd = line.indexOf("\"", tIdx + 8);
+          voiceTranscription = line.substring(tIdx + 8, tEnd);
           redraw = true;
         }
+      } else if (line.indexOf("\"type\":\"RESULT\"") != -1) {
+        parseVoiceAiResponse(line);
       }
     }
   }
