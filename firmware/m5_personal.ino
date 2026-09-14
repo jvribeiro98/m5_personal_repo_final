@@ -10,6 +10,7 @@
 #include <time.h>
 #include <sys/time.h>
 #include "M5StickBleMouse.h"
+#include "GestureAI.h"
 
 // ============================================================
 // M5 PERSONAL - MODULO IR v0.3 CORRIGIDO
@@ -81,7 +82,8 @@ enum class Screen : uint8_t {
   SETTINGS_BRIGHTNESS,
   SETTINGS_CLOCK,
   SETTINGS_SLEEP,
-  MOUSE
+  MOUSE,
+  GESTURE_AI
 };
 
 enum class TvProtocol : uint8_t {
@@ -380,6 +382,19 @@ void drawMouseScreen();
 void updateMouseSearchingDots();
 void updateMouseCrosshair(float vx, float vy, uint16_t ballColor);
 void startBleMouse();
+
+void drawGestureScreen();
+void processGestureScreen();
+void initGestureScreen();
+void playWandChime();
+void playFailSound();
+void executeGestureAction(GestureType type);
+
+GestureRecognizer gestureRecognizer;
+GestureResult lastGestureResult;
+bool gestureHasResult = false;
+uint32_t gestureResultUntil = 0;
+int lastGestureCanvasPoints = 0;
 
 M5StickBleMouse bleMouse;
 bool bleMouseStarted = false;
@@ -3126,13 +3141,15 @@ void drawGridButton(uint8_t index, int x, int y, int w, int h,
 
 void drawMain() {
   drawTitle("M5 PERSONAL");
-  const char* labels[] = {"Controle IR", "Wi-Fi", "Air Mouse", "Team Penning", "Ajustes"};
-  const char* notes[] = {"TV e ar-condicionado", "Redes e controle web", "Aponte, clique, arraste", "Contagem e treinos", "Tela, relogio e repouso"};
+  const char* labels[] = {"Controle IR", "Wi-Fi", "Air Mouse", "Gestos IA", "Team Penning", "Ajustes"};
+  const char* notes[] = {"TV e ar-condicionado", "Redes e controle web", "Aponte, clique, arraste", "Varinha magica 3D", "Contagem e treinos", "Tela, relogio e repouso"};
   auto& d = M5.Display;
   d.fillRect(0, 34, 240, 88, UI_BG);
-  const int first = selected < 4 ? (selected / 2) * 2 : 3;
+  const int first = (selected / 2) * 2;
   for (int row = 0; row < 2; ++row) {
-    const int item = first + row, y = 37 + row * 41;
+    const int item = first + row;
+    if (item >= 6) break;
+    const int y = 37 + row * 41;
     const bool active = selected == item;
     const uint16_t bg = active ? UI_SELECTED : UI_PANEL;
     d.fillRoundRect(8, y, 215, 37, 7, bg);
@@ -3144,7 +3161,7 @@ void drawMain() {
     d.setTextColor(active ? UI_BG : UI_MUTED, bg);
     d.drawString(notes[item], 17, y + 28);
   }
-  for (int i = 0; i < 5; ++i) d.fillCircle(231, 47 + 14*i, 2, selected == i ? UI_SELECTED : UI_BORDER);
+  for (int i = 0; i < 6; ++i) d.fillCircle(231, 40 + 9*i, 2, selected == i ? UI_SELECTED : UI_BORDER);
 }
 
 
@@ -3641,12 +3658,238 @@ void drawMouseScreen() {
   d.drawString("Segure C: calibrar", 67, 231);
 }
 
+void playWandChime() {
+  if (M5.Speaker.isEnabled()) {
+    M5.Speaker.tone(1318, 50);
+    delay(40);
+    M5.Speaker.tone(1568, 50);
+    delay(40);
+    M5.Speaker.tone(2093, 80);
+  }
+}
+
+void playFailSound() {
+  if (M5.Speaker.isEnabled()) {
+    M5.Speaker.tone(420, 120);
+  }
+}
+
+void executeGestureAction(GestureType type) {
+  switch (type) {
+    case GESTURE_CIRCLE:
+      sendTvCommand(TV_POWER);
+      playWandChime();
+      break;
+    case GESTURE_CHECK_V:
+      sendTvCommand(TV_MUTE);
+      playWandChime();
+      break;
+    case GESTURE_SWIPE_UP:
+      sendTvCommand(TV_VOL_UP);
+      playWandChime();
+      break;
+    case GESTURE_SWIPE_DOWN:
+      sendTvCommand(TV_VOL_DOWN);
+      playWandChime();
+      break;
+    case GESTURE_SWIPE_RIGHT:
+      sendTvCommand(TV_CH_UP);
+      playWandChime();
+      break;
+    case GESTURE_SWIPE_LEFT:
+      sendTvCommand(TV_CH_DOWN);
+      playWandChime();
+      break;
+    case GESTURE_ZIGZAG: {
+      AcDevice& device = airConditioners[activeAc];
+      device.state.power = !device.state.power;
+      sendAcState(device.state.power ? "AR LIGADO" : "AR DESLIGADO");
+      saveAcState(activeAc);
+      playWandChime();
+      break;
+    }
+    case GESTURE_TRIANGLE: {
+      AcDevice& device = airConditioners[activeAc];
+      device.state.turbo = !device.state.turbo;
+      sendAcState(device.state.turbo ? "TURBO ON" : "TURBO OFF");
+      saveAcState(activeAc);
+      playWandChime();
+      break;
+    }
+    case GESTURE_THRUST:
+      sendTvCommand(TV_OK);
+      playWandChime();
+      break;
+    default:
+      playFailSound();
+      break;
+  }
+}
+
+void initGestureScreen() {
+  if (!M5.Imu.isEnabled()) {
+    M5.Imu.begin();
+    if (!M5.Imu.isEnabled()) {
+      M5.Imu.begin(&M5.In_I2C, M5.getBoard());
+    }
+  }
+  gestureHasResult = false;
+  lastGestureCanvasPoints = 0;
+  redraw = true;
+}
+
+void drawGestureScreen() {
+  auto& d = M5.Display;
+  d.setTextSize(1);
+  d.setTextDatum(middle_left);
+  d.setTextColor(UI_MUTED, UI_BG);
+  d.drawString("M5 / VARINHA", 9, 10);
+  d.setTextSize(2);
+  d.setTextColor(UI_TEXT, UI_BG);
+  d.drawString("Gestos IA", 9, 25);
+
+  // Barra de status
+  d.fillRoundRect(8, 36, 119, 20, 4, UI_PANEL);
+  d.setTextDatum(middle_center);
+  d.setTextSize(1);
+  if (gestureRecognizer.isRecording()) {
+    d.setTextColor(UI_SELECTED, UI_PANEL);
+    d.drawString("DESENHANDO...", 67, 46);
+  } else if (gestureHasResult && lastGestureResult.type != GESTURE_NONE) {
+    d.setTextColor(lastGestureResult.color, UI_PANEL);
+    d.drawString(lastGestureResult.name, 67, 46);
+  } else {
+    d.setTextColor(UI_YELLOW, UI_PANEL);
+    d.drawString("SEGURE [ A ]", 67, 46);
+  }
+
+  // Borda do canvas
+  d.drawRoundRect(8, 59, 119, 96, 5, UI_BORDER);
+  d.fillRect(9, 60, 117, 94, UI_BG);
+
+  if (!gestureRecognizer.isRecording() && !gestureHasResult) {
+    // Tabela guia de magias
+    d.setTextDatum(middle_left);
+    d.setTextSize(1);
+    d.setTextColor(UI_YELLOW, UI_BG);
+    d.drawString("O  Circulo -> TV Pwr", 13, 73);
+    d.setTextColor(UI_GREEN, UI_BG);
+    d.drawString("V  Letra V -> Mudo", 13, 89);
+    d.setTextColor(0x05BF, UI_BG); // Ciano
+    d.drawString("Z  Letra Z -> Ar Pwr", 13, 105);
+    d.setTextColor(UI_SELECTED, UI_BG);
+    d.drawString("^  Swipe   -> Vol +", 13, 121);
+    d.setTextColor(UI_MUTED, UI_BG);
+    d.drawString("v  Swipe   -> Vol -", 13, 137);
+  } else if (gestureHasResult) {
+    d.setTextDatum(middle_center);
+    d.setTextSize(3);
+    d.setTextColor(lastGestureResult.color, UI_BG);
+    d.drawString(lastGestureResult.symbol, 67, 90);
+
+    d.setTextSize(1);
+    d.setTextColor(UI_MUTED, UI_BG);
+    d.drawString(String((int)lastGestureResult.confidence) + "% confianca", 67, 116);
+    d.setTextColor(UI_SELECTED, UI_BG);
+    d.drawString(lastGestureResult.action, 67, 135);
+  }
+
+  // Painel de acao
+  d.fillRoundRect(8, 158, 119, 56, 5, UI_PANEL);
+  d.setTextDatum(middle_left);
+  d.setTextSize(1);
+  d.setTextColor(UI_SELECTED, UI_PANEL);
+  d.drawString("A", 16, 170);
+  d.setTextColor(UI_TEXT, UI_PANEL);
+  d.drawString("Segure e desenhe", 30, 170);
+
+  d.setTextColor(UI_SELECTED, UI_PANEL);
+  d.drawString("B", 16, 188);
+  d.setTextColor(UI_TEXT, UI_PANEL);
+  d.drawString("Limpar tela", 30, 188);
+
+  d.setTextColor(UI_MUTED, UI_PANEL);
+  d.drawString("Solte A p/ executar", 16, 204);
+
+  // Rodape
+  d.setTextDatum(middle_center);
+  d.setTextColor(UI_MUTED, UI_BG);
+  d.drawString("C: voltar ao menu", 67, 227);
+}
+
+void processGestureScreen() {
+  lastUserActivityAt = millis();
+
+  if (buttonC.wasClicked() || buttonC.wasHeld()) {
+    goBack();
+    return;
+  }
+
+  if (M5.BtnB.wasClicked()) {
+    gestureHasResult = false;
+    redraw = true;
+  }
+
+  // Pressionou Botao A: inicia gravacao da trajetoria
+  if (M5.BtnA.wasPressed()) {
+    gestureRecognizer.startRecording();
+    gestureHasResult = false;
+    lastGestureCanvasPoints = 0;
+    redraw = true;
+  }
+
+  // Segurando Botao A: amostra IMU e desenha rastro visual
+  if (M5.BtnA.isPressed()) {
+    float gx = 0, gy = 0, gz = 0, ax = 0, ay = 0, az = 0;
+    if (M5.Imu.getGyro(&gx, &gy, &gz) && M5.Imu.getAccel(&ax, &ay, &az)) {
+      gestureRecognizer.sample(gx, gy, gz, ax, ay, az);
+
+      int count = gestureRecognizer.getRawPointCount();
+      if (count > lastGestureCanvasPoints && count >= 2) {
+        auto& d = M5.Display;
+        d.startWrite();
+        const GesturePoint* pts = gestureRecognizer.getRawPoints();
+        for (int i = max(1, lastGestureCanvasPoints); i < count; ++i) {
+          int x1 = 67 + constrain((int)(pts[i - 1].x * 35.0f), -50, 50);
+          int y1 = 107 + constrain((int)(pts[i - 1].y * 35.0f), -40, 40);
+          int x2 = 67 + constrain((int)(pts[i].x * 35.0f), -50, 50);
+          int y2 = 107 + constrain((int)(pts[i].y * 35.0f), -40, 40);
+          d.drawLine(x1, y1, x2, y2, UI_SELECTED);
+          d.fillCircle(x2, y2, 2, UI_YELLOW);
+        }
+        d.endWrite();
+        lastGestureCanvasPoints = count;
+      }
+    }
+  }
+
+  // Soltou Botao A: classifica o gesto e executa a acao!
+  if (M5.BtnA.wasReleased()) {
+    lastGestureResult = gestureRecognizer.finishAndClassify();
+    gestureHasResult = true;
+    gestureResultUntil = millis() + 4000;
+    if (lastGestureResult.type != GESTURE_NONE) {
+      executeGestureAction(lastGestureResult.type);
+    } else {
+      playFailSound();
+    }
+    redraw = true;
+  }
+
+  // Volta ao guia de magias apos alguns segundos
+  if (gestureHasResult && millis() > gestureResultUntil) {
+    gestureHasResult = false;
+    redraw = true;
+  }
+}
+
 void drawScreen() {
   auto& display = M5.Display;
   const bool portrait = screen == Screen::TEAM_CATTLE_LIMIT ||
                         screen == Screen::TEAM_CATTLE_COUNTER ||
                         screen == Screen::TEAM_CATTLE_RESET_CONFIRM ||
-                        screen == Screen::MOUSE;
+                        screen == Screen::MOUSE ||
+                        screen == Screen::GESTURE_AI;
   display.setRotation(portrait ? 0 : 3);
   display.startWrite();
 
@@ -3695,6 +3938,7 @@ void drawScreen() {
     case Screen::SETTINGS_CLOCK: drawSettingsClock(); break;
     case Screen::SETTINGS_SLEEP: drawSettingsSleep(); break;
     case Screen::MOUSE:          drawMouseScreen(); break;
+    case Screen::GESTURE_AI:     drawGestureScreen(); break;
   }
 
   if (!portrait) drawFooter();
@@ -3708,7 +3952,7 @@ void drawScreen() {
 
 uint8_t itemCount() {
   switch (screen) {
-    case Screen::MAIN:                return 5;
+    case Screen::MAIN:                return 6;
     case Screen::WIFI_MENU:           return 4;
     case Screen::WIFI_SCANNING:       return 1;
     case Screen::WIFI_NETWORKS:       return scannedNetworkCount ? scannedNetworkCount : 1;
@@ -3742,6 +3986,7 @@ uint8_t itemCount() {
     case Screen::SETTINGS_CLOCK: return 1;
     case Screen::SETTINGS_SLEEP: return 1;
     case Screen::MOUSE: return 1;
+    case Screen::GESTURE_AI: return 1;
   }
   return 1;
 }
@@ -3808,6 +4053,12 @@ void goBack() {
       }
       screen = Screen::MAIN;
       selected = 2;
+      redraw = true;
+      return;
+
+    case Screen::GESTURE_AI:
+      screen = Screen::MAIN;
+      selected = 3;
       redraw = true;
       return;
 
@@ -3924,7 +4175,11 @@ void executeSelected() {
         mouseSmoothDx = 0.0f;
         mouseSmoothDy = 0.0f;
       }
-      else if (selected == 3) screen = Screen::TEAM_MENU;
+      else if (selected == 3) {
+        screen = Screen::GESTURE_AI;
+        initGestureScreen();
+      }
+      else if (selected == 4) screen = Screen::TEAM_MENU;
       else screen = Screen::SETTINGS_MENU;
       selected = 0;
       break;
@@ -4240,10 +4495,17 @@ void loop() {
   const bool anyButtonPressed = M5.BtnA.wasPressed() || M5.BtnB.wasPressed() || (cPressedNow && !previousCPressed);
   previousCPressed = cPressedNow;
   const DisplayIdleState idleBeforeInput = displayIdleState;
-  if (screen == Screen::MOUSE) lastUserActivityAt = millis();
+  if (screen == Screen::MOUSE || screen == Screen::GESTURE_AI) lastUserActivityAt = millis();
   processDisplayIdle(anyButtonPressed);
   if (idleBeforeInput != DisplayIdleState::ACTIVE || displayIdleState != DisplayIdleState::ACTIVE) {
     delay(10);
+    return;
+  }
+
+  if (screen == Screen::GESTURE_AI) {
+    processGestureScreen();
+    if (redraw) drawScreen();
+    delay(1);
     return;
   }
 

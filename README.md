@@ -1,4 +1,4 @@
-﻿# 🎮 M5 Personal — Universal Multi-IR, Wi-Fi Remote & Air Mouse BLE (M5StickC Plus2)
+# 🎮 M5 Personal — Universal Multi-IR, Wi-Fi Remote & Air Mouse BLE (M5StickC Plus2)
 
 [![PlatformIO](https://img.shields.io/badge/PlatformIO-Compatible-FF8C00?style=for-the-badge&logo=platformio&logoColor=white)](https://platformio.org/)
 [![Arduino ESP32](https://img.shields.io/badge/Arduino_ESP32-3.3.8-00979D?style=for-the-badge&logo=arduino&logoColor=white)](https://espressif.github.io/arduino-esp32/)
@@ -93,6 +93,22 @@ graph TD
 | **Botão B (Lateral)** | 1 Clique ou Segurar | **Clique Direito** (Bolinha pisca ciano) |
 | **Botão C / PWR (Topo)** | 1 Clique | Voltar ao Menu Principal |
 | **Botão C / PWR (Topo)** | Segurar (> 2s) | **Recalibrar Repouso** (Zera qualquer desvio) |
+
+### Modo Gestos IA (Varinha Mágica 3D)
+Segure o **Botão A** apontando o M5Stick para a frente, desenhe o símbolo no ar e solte o botão:
+
+| Símbolo Desenhado no Ar | Reconhecimento | Ação Automática Disparada |
+| :--- | :--- | :--- |
+| **Círculo** | `CIRCULO` | **Power TV** (Disparo IR Samsung/LG) + Chime Mágico |
+| **Letra V / Check** | `LETRA V` | **Mudo TV** (Disparo IR) + Chime Mágico |
+| **Letra Z / Raio** | `LETRA Z` | **Power Ar-condicionado** (Disparo IR) + Chime Mágico |
+| **Swipe para Cima** | `SWIPE CIMA` | **Volume + / Temp +** (Disparo IR) |
+| **Swipe para Baixo** | `SWIPE BAIXO` | **Volume - / Temp -** (Disparo IR) |
+| **Swipe Direita / Esquerda** | `SWIPE DIR/ESQ` | **Canal + / Canal -** (Disparo IR) |
+| **Estocada para Frente** | `ESTOCADA` | **OK / Confirmar** |
+
+* **Botão B:** Limpa o resultado da tela.
+* **Botão C:** Volta ao Menu Principal.
 
 ---
 
