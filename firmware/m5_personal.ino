@@ -357,6 +357,13 @@ time_t weatherUpdatedAt = 0;
 bool weatherLocationValid = false;
 bool weatherUpdatePending = false;
 
+// --- Relogio Cyberdeck & Watchface ---
+uint8_t currentWatchfaceStyle = 0; // 0: CYBER HUD, 1: BIG NEON, 2: MATRIX TERMINAL
+bool clockReturnToSettings = false;
+void drawWeatherIcon(int x, int y, float temp, bool connected);
+void drawCyberWatchface(bool fullClear);
+String clockDayOfWeekText();
+
 bool isMenuScreen(Screen value);
 void drawWifiIcon(int x, int y, bool connected);
 void drawBatteryGauge(int x, int y, int battery, bool charging);
@@ -2600,6 +2607,7 @@ bool isMenuScreen(Screen value) {
 void loadSystemSettings() {
   prefs.begin("system", true);
   brightnessIndex = min<uint8_t>(4, prefs.getUChar("bright", 2));
+  currentWatchfaceStyle = prefs.getUChar("wf_style", 0) % 3;
   prefs.end();
   M5.Display.setBrightness(BRIGHTNESS_LEVELS[brightnessIndex]);
 }
@@ -2896,69 +2904,311 @@ void updateStatusBarClock() {
   d.endWrite();
 }
 
-void drawClockScreen(bool fullClear) {
+
+String clockDayOfWeekText() {
+  if (!clockIsValid()) return "---";
+  time_t now = time(nullptr);
+  tm value;
+  localtime_r(&now, &value);
+  const char* days[] = {"DOM", "SEG", "TER", "QUA", "QUI", "SEX", "SAB"};
+  if (value.tm_wday >= 0 && value.tm_wday <= 6) return days[value.tm_wday];
+  return "---";
+}
+
+void drawWeatherIcon(int x, int y, float temp, bool connected) {
+  auto& d = M5.Display;
+  if (!connected && isnan(temp)) {
+    d.drawCircle(x + 7, y + 7, 6, UI_MUTED);
+    d.drawFastHLine(x + 1, y + 7, 12, UI_MUTED);
+    d.drawFastVLine(x + 7, y + 1, 12, UI_MUTED);
+    return;
+  }
+  if (!isnan(temp) && temp >= 22.0f) {
+    d.fillCircle(x + 7, y + 7, 4, UI_YELLOW);
+    d.drawCircle(x + 7, y + 7, 4, UI_ORANGE);
+    d.drawFastVLine(x + 7, y + 1, 2, UI_YELLOW);
+    d.drawFastVLine(x + 7, y + 12, 2, UI_YELLOW);
+    d.drawFastHLine(x + 1, y + 7, 2, UI_YELLOW);
+    d.drawFastHLine(x + 12, y + 7, 2, UI_YELLOW);
+    d.drawPixel(x + 3, y + 3, UI_YELLOW);
+    d.drawPixel(x + 11, y + 3, UI_YELLOW);
+    d.drawPixel(x + 3, y + 11, UI_YELLOW);
+    d.drawPixel(x + 11, y + 11, UI_YELLOW);
+  } else {
+    d.fillCircle(x + 5, y + 8, 3, UI_CYAN);
+    d.fillCircle(x + 9, y + 7, 4, UI_TEXT);
+    d.fillRoundRect(x + 2, y + 7, 12, 5, 2, UI_CYAN);
+  }
+}
+
+void drawCyberWatchface(bool fullClear) {
   auto& d = M5.Display;
   d.setRotation(3);
   d.startWrite();
+
+  time_t now = time(nullptr);
+  tm value;
+  localtime_r(&now, &value);
+  const int hour = value.tm_hour;
+  const int min = value.tm_min;
+  const int sec = value.tm_sec;
+  const bool secEven = (sec % 2 == 0);
+  const int battery = constrain(M5.Power.getBatteryLevel(), 0, 100);
+  const bool charging = M5.Power.isCharging();
+  const bool wifiConnected = (WiFi.status() == WL_CONNECTED);
+
   if (fullClear) {
     d.fillScreen(UI_BG);
   }
 
-  // Hora em tamanho grande
-  if (!fullClear) {
-    d.fillRect(20, 8, 200, 42, UI_BG);
+  // ============================================================
+  // ESTILO 0: CYBER HUD (Painéis Obsidian, Bateria, Wi-Fi & Barra 60s)
+  // ============================================================
+  if (currentWatchfaceStyle == 0) {
+    if (fullClear) {
+      d.fillRoundRect(6, 3, 90, 16, 3, UI_PANEL);
+      d.drawRoundRect(6, 3, 90, 16, 3, UI_CYAN);
+      d.setTextDatum(middle_center);
+      d.setTextSize(1);
+      d.setTextColor(UI_CYAN, UI_PANEL);
+      d.drawString("CHRONO // OS", 51, 11);
+      d.drawFastHLine(0, 22, 240, UI_BORDER);
+    }
+    d.fillRect(100, 3, 134, 18, UI_BG);
+    drawWifiIcon(112, 5, wifiConnected);
+    drawBatteryGauge(134, 6, battery, charging);
+
+    if (fullClear) {
+      d.fillRoundRect(6, 26, 144, 54, 4, UI_PANEL);
+      d.drawRoundRect(6, 26, 144, 54, 4, UI_BORDER);
+      d.fillRoundRect(8, 30, 3, 46, 1, UI_CYAN);
+    } else {
+      d.fillRect(14, 28, 134, 48, UI_PANEL);
+    }
+
+    char hBuf[4], mBuf[4];
+    snprintf(hBuf, sizeof(hBuf), "%02d", hour);
+    snprintf(mBuf, sizeof(mBuf), "%02d", min);
+
+    d.setTextDatum(middle_left);
+    d.setTextSize(4);
+    d.setTextColor(clockIsValid() ? UI_TEXT : UI_MUTED, UI_PANEL);
+    d.drawString(hBuf, 16, 48);
+    d.setTextColor(secEven ? UI_CYAN : UI_MUTED, UI_PANEL);
+    d.drawString(":", 62, 46);
+    d.setTextColor(clockIsValid() ? UI_TEXT : UI_MUTED, UI_PANEL);
+    d.drawString(mBuf, 74, 48);
+
+    d.fillRoundRect(120, 32, 26, 16, 3, UI_PANEL_ALT);
+    d.drawRoundRect(120, 32, 26, 16, 3, UI_ORANGE);
+    char sBuf[6];
+    snprintf(sBuf, sizeof(sBuf), ":%02d", sec);
+    d.setTextDatum(middle_center);
+    d.setTextSize(1);
+    d.setTextColor(UI_ORANGE, UI_PANEL_ALT);
+    d.drawString(sBuf, 133, 40);
+
+    const char* days[] = {"DOM", "SEG", "TER", "QUA", "QUI", "SEX", "SAB"};
+    const char* dayName = (value.tm_wday >= 0 && value.tm_wday <= 6) ? days[value.tm_wday] : "---";
+    char dBuf[28];
+    snprintf(dBuf, sizeof(dBuf), "[%s] %02d/%02d/%04d", dayName, value.tm_mday, value.tm_mon + 1, value.tm_year + 1900);
+    d.setTextDatum(middle_left);
+    d.setTextSize(1);
+    d.setTextColor(UI_YELLOW, UI_PANEL);
+    d.drawString(dBuf, 16, 68);
+
+    if (fullClear) {
+      d.fillRoundRect(154, 26, 80, 54, 4, UI_PANEL);
+      d.drawRoundRect(154, 26, 80, 54, 4, UI_BORDER);
+      d.setTextDatum(middle_left);
+      d.setTextSize(1);
+      d.setTextColor(UI_MUTED, UI_PANEL);
+      d.drawString("METEO", 182, 35);
+    }
+    d.fillRect(156, 44, 76, 34, UI_PANEL);
+    drawWeatherIcon(162, 29, weatherTemperature, wifiConnected);
+
+    d.setTextDatum(middle_center);
+    d.setTextSize(2);
+    d.setTextColor(UI_YELLOW, UI_PANEL);
+    String tempStr = isnan(weatherTemperature) ? "-- C" : String((int)round(weatherTemperature)) + " C";
+    d.drawString(tempStr, 194, 53);
+
+    d.setTextSize(1);
+    d.setTextColor(UI_CYAN, UI_PANEL);
+    String cityStr = weatherCity.length() ? weatherCity.substring(0, 8) : (wifiConnected ? "NTP OK" : "OFFLINE");
+    d.drawString(cityStr, 194, 70);
+
+    d.fillRect(6, 83, 228, 5, UI_BG);
+    d.fillRoundRect(6, 83, 228, 4, 2, UI_PANEL);
+    int progW = map(sec, 0, 59, 4, 228);
+    d.fillRoundRect(6, 83, progW, 4, 2, UI_CYAN);
+    d.fillCircle(constrain(6 + progW, 6, 233), 85, 2, UI_TEXT);
+    d.drawFastVLine(63, 83, 4, UI_BORDER);
+    d.drawFastVLine(120, 83, 4, UI_BORDER);
+    d.drawFastVLine(177, 83, 4, UI_BORDER);
+
+    if (fullClear) {
+      d.fillRoundRect(6, 90, 112, 29, 3, UI_PANEL);
+      d.drawRoundRect(6, 90, 112, 29, 3, UI_BORDER);
+      d.fillRoundRect(122, 90, 112, 29, 3, UI_PANEL);
+      d.drawRoundRect(122, 90, 112, 29, 3, UI_BORDER);
+    } else {
+      d.fillRect(8, 92, 108, 25, UI_PANEL);
+      d.fillRect(124, 92, 108, 25, UI_PANEL);
+    }
+    d.setTextDatum(middle_left);
+    d.setTextSize(1);
+    d.setTextColor(wifiConnected ? UI_GREEN : UI_RED, UI_PANEL);
+    d.drawString(wifiConnected ? ("WF: " + WiFi.SSID().substring(0, 9)) : "WF: OFFLINE", 10, 98);
+    d.setTextColor(clockIsValid() ? UI_CYAN : UI_MUTED, UI_PANEL);
+    d.drawString(clockIsValid() ? "NTP: SINCRONIZADO" : "NTP: PENDENTE", 10, 110);
+
+    d.setTextColor(UI_MUTED, UI_PANEL);
+    d.drawString("RAM: " + String(ESP.getFreeHeap() / 1024) + "KB", 126, 98);
+    d.setTextColor(UI_YELLOW, UI_PANEL);
+    d.drawString("UP: " + String(millis() / 60000) + "m" + (charging ? " [CHG]" : ""), 126, 110);
+
+    if (fullClear) {
+      d.fillRect(0, 122, 240, 13, UI_BG);
+      d.setTextDatum(middle_center);
+      d.setTextSize(1);
+      d.setTextColor(UI_MUTED, UI_BG);
+      d.drawString("[A] Sync    [B] Estilo    [C] Voltar", 120, 128);
+    }
   }
-  d.setTextDatum(middle_center);
-  d.setTextColor(UI_TEXT, UI_BG);
-  d.setTextSize(4);
-  d.drawString(clockTimeText(), 120, 30);
+  // ============================================================
+  // ESTILO 1: BIG NEON (Minimalista Gigante)
+  // ============================================================
+  else if (currentWatchfaceStyle == 1) {
+    if (fullClear) {
+      d.drawFastHLine(0, 19, 240, UI_BORDER);
+      d.fillRoundRect(8, 23, 224, 64, 5, UI_PANEL);
+      d.drawRoundRect(8, 23, 224, 64, 5, UI_CYAN);
+      d.fillRoundRect(10, 27, 4, 56, 2, UI_CYAN);
+    }
+    d.fillRect(4, 2, 232, 16, UI_BG);
+    d.setTextDatum(middle_left);
+    d.setTextSize(1);
+    d.setTextColor(UI_GREEN, UI_BG);
+    char dateTop[24];
+    const char* days[] = {"DOM", "SEG", "TER", "QUA", "QUI", "SEX", "SAB"};
+    const char* dn = (value.tm_wday >= 0 && value.tm_wday <= 6) ? days[value.tm_wday] : "---";
+    snprintf(dateTop, sizeof(dateTop), "[%s] %02d/%02d/%04d", dn, value.tm_mday, value.tm_mon + 1, value.tm_year + 1900);
+    d.drawString(dateTop, 8, 10);
+    drawWifiIcon(120, 4, wifiConnected);
+    drawBatteryGauge(144, 5, battery, charging);
 
-  // Data
-  if (!fullClear) {
-    d.fillRect(20, 48, 200, 14, UI_BG);
+    d.fillRect(16, 26, 156, 58, UI_PANEL);
+    char hBuf[4], mBuf[4];
+    snprintf(hBuf, sizeof(hBuf), "%02d", hour);
+    snprintf(mBuf, sizeof(mBuf), "%02d", min);
+    d.setTextDatum(middle_left);
+    d.setTextSize(5);
+    d.setTextColor(clockIsValid() ? UI_TEXT : UI_MUTED, UI_PANEL);
+    d.drawString(hBuf, 20, 56);
+    d.setTextColor(secEven ? UI_CYAN : UI_MUTED, UI_PANEL);
+    d.drawString(":", 76, 53);
+    d.setTextColor(clockIsValid() ? UI_TEXT : UI_MUTED, UI_PANEL);
+    d.drawString(mBuf, 92, 56);
+
+    d.fillRoundRect(178, 34, 44, 24, 3, UI_PANEL_ALT);
+    d.drawRoundRect(178, 34, 44, 24, 3, UI_ORANGE);
+    char sBuf[6];
+    snprintf(sBuf, sizeof(sBuf), "%02d", sec);
+    d.setTextDatum(middle_center);
+    d.setTextSize(2);
+    d.setTextColor(UI_ORANGE, UI_PANEL_ALT);
+    d.drawString(sBuf, 200, 46);
+
+    if (fullClear) {
+      d.fillRoundRect(8, 91, 224, 25, 4, UI_PANEL);
+      d.drawRoundRect(8, 91, 224, 25, 4, UI_BORDER);
+    } else {
+      d.fillRect(10, 93, 220, 21, UI_PANEL);
+    }
+    drawWeatherIcon(16, 95, weatherTemperature, wifiConnected);
+    d.setTextDatum(middle_left);
+    d.setTextSize(1);
+    d.setTextColor(UI_YELLOW, UI_PANEL);
+    String wInfo = (isnan(weatherTemperature) ? "-- C" : String((int)round(weatherTemperature)) + " C") + "  " + (weatherCity.length() ? weatherCity.substring(0, 10) : "LOCAL") + "  •  " + (wifiConnected ? "SYNC OK" : "OFFLINE");
+    d.drawString(wInfo, 36, 103);
+
+    d.fillRect(8, 119, 224, 4, UI_PANEL);
+    d.fillRoundRect(8, 119, map(sec, 0, 59, 4, 224), 4, 2, UI_GREEN);
+
+    if (fullClear) {
+      d.fillRect(0, 125, 240, 10, UI_BG);
+      d.setTextDatum(middle_center);
+      d.setTextSize(1);
+      d.setTextColor(UI_MUTED, UI_BG);
+      d.drawString("[A] Sync    [B] Estilo    [C] Voltar", 120, 129);
+    }
   }
-  d.setTextSize(1);
-  d.setTextColor(UI_MUTED, UI_BG);
-  d.drawString(clockDateText(), 120, 53);
+  // ============================================================
+  // ESTILO 2: MATRIX TERMINAL (Console Hacker)
+  // ============================================================
+  else {
+    if (fullClear) {
+      d.fillRect(0, 0, 240, 15, UI_PANEL);
+      d.setTextDatum(middle_left);
+      d.setTextSize(1);
+      d.setTextColor(UI_GREEN, UI_PANEL);
+      d.drawString("root@m5stick:~# sys_clock --live", 6, 7);
+      d.drawFastHLine(0, 15, 240, UI_GREEN);
+    }
+    drawWifiIcon(192, 2, wifiConnected);
 
-  if (fullClear) {
-    // Linha divisoria sutil (desenhada apenas uma vez na inicialização da tela)
-    d.drawFastHLine(20, 64, 200, UI_BORDER);
+    d.fillRect(0, 18, 240, 104, UI_BG);
+    d.setTextDatum(middle_left);
+    d.setTextSize(1);
+
+    char l1[45];
+    snprintf(l1, sizeof(l1), "TIME  > [ %02d:%02d:%02d ]  BRT (UTC-3)", hour, min, sec);
+    d.setTextColor(UI_GREEN, UI_BG);
+    d.drawString(l1, 6, 26);
+
+    char l2[45];
+    const char* days[] = {"DOM", "SEG", "TER", "QUA", "QUI", "SEX", "SAB"};
+    const char* dn = (value.tm_wday >= 0 && value.tm_wday <= 6) ? days[value.tm_wday] : "---";
+    snprintf(l2, sizeof(l2), "DATE  > %02d/%02d/%04d (%s)", value.tm_mday, value.tm_mon + 1, value.tm_year + 1900, dn);
+    d.setTextColor(UI_CYAN, UI_BG);
+    d.drawString(l2, 6, 40);
+
+    String l3 = "METEO > " + (isnan(weatherTemperature) ? String("--.-") : String((int)round(weatherTemperature))) + " C | " + (weatherCity.length() ? weatherCity.substring(0, 10) : "OFFLINE");
+    d.setTextColor(UI_YELLOW, UI_BG);
+    d.drawString(l3, 6, 54);
+
+    String l4 = "NET   > " + (wifiConnected ? ("SSID: " + WiFi.SSID().substring(0, 12)) : "DESCONECTADO") + " | " + (clockIsValid() ? "NTP:OK" : "NTP:--");
+    d.setTextColor(wifiConnected ? UI_GREEN : UI_RED, UI_BG);
+    d.drawString(l4, 6, 68);
+
+    String l5 = "POWER > BAT: " + String(battery) + "% " + (charging ? "[CARREGANDO]" : "[BATERIA]") + " | " + String(ESP.getFreeHeap()/1024) + "KB";
+    d.setTextColor(UI_TEXT, UI_BG);
+    d.drawString(l5, 6, 82);
+
+    String l6 = "SYS   > UP: " + String(millis() / 60000) + " min | CPU: 240MHz";
+    d.setTextColor(UI_MUTED, UI_BG);
+    d.drawString(l6, 6, 96);
+
+    d.setTextColor(UI_GREEN, UI_BG);
+    d.drawString("m5stick@os:~$ " + String(secEven ? "_" : " "), 6, 110);
+
+    if (fullClear) {
+      d.fillRect(0, 124, 240, 11, UI_BG);
+      d.setTextDatum(middle_center);
+      d.setTextSize(1);
+      d.setTextColor(UI_MUTED, UI_BG);
+      d.drawString("[A] Sync    [B] Estilo    [C] Voltar", 120, 128);
+    }
   }
-
-  // Status Conexao e Bateria
-  if (!fullClear) {
-    d.fillRect(20, 68, 200, 30, UI_BG);
-  }
-  String connection;
-  if (WiFi.status() == WL_CONNECTED) connection += "WIFI: " + WiFi.SSID();
-  else if (webUiMode == WebUiMode::SETUP_AP) connection += "MODO AP ATIVO";
-  else connection += "WIFI DESCONECTADO";
-  d.setTextDatum(middle_center);
-  d.setTextSize(1);
-  d.setTextColor(WiFi.status() == WL_CONNECTED ? 0x05BF : UI_MUTED, UI_BG);
-  d.drawString(connection, 120, 76);
-
-  int battery = constrain(M5.Power.getBatteryLevel(), 0, 100);
-  String batInfo = "BATERIA: " + String(battery) + "%" + (M5.Power.isCharging() ? " (CARREGANDO)" : "");
-  d.setTextColor(UI_GREEN, UI_BG);
-  d.drawString(batInfo, 120, 90);
-
-  // Clima e Cidade
-  if (!fullClear) {
-    d.fillRect(20, 98, 200, 36, UI_BG);
-  }
-  d.setTextColor(UI_TEXT, UI_BG);
-  String place = weatherCity.length() ? weatherCity : "CIDADE NAO OBTIDA";
-  d.drawString(place.substring(0, 26), 120, 106);
-
-  String temperature = isnan(weatherTemperature) ? "-- C" : String(weatherTemperature, 1) + " C";
-  d.setTextSize(2);
-  d.setTextColor(UI_YELLOW, UI_BG);
-  d.drawString(temperature, 120, 122);
 
   d.endWrite();
   lastClockRedrawAt = millis();
+}
+
+void drawClockScreen(bool fullClear) {
+  drawCyberWatchface(fullClear);
 }
 
 void restoreDisplayFromIdle() {
@@ -2998,9 +3248,10 @@ void processDisplayIdle(bool anyButtonPressed) {
     time_t tnow = time(nullptr);
     tm tval;
     localtime_r(&tnow, &tval);
-    if (tval.tm_min != lastClockIdleMin) {
-      lastClockIdleMin = tval.tm_min;
-      drawClockScreen(false); // Atualizacao suave sem apagar o display!
+    static int lastClockIdleSec = -1;
+    if (tval.tm_sec != lastClockIdleSec) {
+      lastClockIdleSec = tval.tm_sec;
+      drawClockScreen(false); // Atualizacao a cada segundo no screensaver!
     }
     if (now - clockScreenStartedAt >= SCREEN_OFF_AFTER_CLOCK_MS) {
       displayIdleState = DisplayIdleState::OFF;
@@ -3012,7 +3263,7 @@ void processDisplayIdle(bool anyButtonPressed) {
 void drawSettingsMenu() {
   drawTitle("CONFIGURACOES");
   drawListItem(0, 40, "BRILHO", String((brightnessIndex + 1) * 20) + "%");
-  drawListItem(1, 67, "HORARIO & CLIMA", clockTimeText());
+  drawListItem(1, 67, "RELOGIO CYBER", clockTimeText());
   drawListItem(2, 94, "DESCANSO DE TELA", "3 + 10 min");
 }
 
@@ -3029,22 +3280,7 @@ void drawSettingsBrightness() {
 }
 
 void drawSettingsClock() {
-  drawTitle("HORARIO & CLIMA", clockIsValid() ? "AJUSTADO" : "SEM DATA");
-  M5.Display.fillRect(20, 36, 200, 44, UI_BG);
-  M5.Display.setTextDatum(middle_center);
-  M5.Display.setTextSize(4);
-  M5.Display.setTextColor(UI_TEXT, UI_BG);
-  M5.Display.drawString(clockTimeText(), 120, 58);
-  M5.Display.setTextSize(1);
-  M5.Display.setTextColor(UI_MUTED, UI_BG);
-  String info = clockDateText();
-  if (weatherCity.length() && !isnan(weatherTemperature)) {
-    info += "  " + weatherCity + " " + String(weatherTemperature, 1) + " C";
-  }
-  M5.Display.fillRect(10, 76, 220, 16, UI_BG);
-  M5.Display.drawString(info, 120, 84);
-  M5.Display.setTextColor(UI_GREEN, UI_BG);
-  M5.Display.drawString("A SINCRONIZA PELA INTERNET", 120, 108);
+  drawCyberWatchface(forceFullRedraw);
 }
 
 void drawSettingsSleep() {
@@ -3213,16 +3449,16 @@ void drawGridButton(uint8_t index, int x, int y, int w, int h,
 
 void drawMain() {
   drawTitle("M5 PERSONAL");
-  const char* labels[] = {"Controle IR", "Wi-Fi Hub", "Air Mouse", "Agente IA", "Team Penning", "Ajustes"};
-  const char* notes[]  = {"TV e ar-condicionado", "Redes e controle web", "Apontador Bluetooth", "Comando de voz no PC", "Contagem e treinos", "Tela, relogio, repouso"};
-  const char* badges[] = {"IR", "WF", "MS", "IA", "TP", "CF"};
-  const uint16_t badgeColors[] = {UI_ORANGE, UI_CYAN, UI_GREEN, UI_PURPLE, UI_YELLOW, UI_MUTED};
+  const char* labels[] = {"Relogio Cyber", "Controle IR", "Wi-Fi Hub", "Air Mouse", "Agente IA", "Team Penning", "Ajustes"};
+  const char* notes[]  = {"Watchface HUD e clima", "TV e ar-condicionado", "Redes e controle web", "Apontador Bluetooth", "Comando de voz no PC", "Contagem e treinos", "Tela, relogio, repouso"};
+  const char* badges[] = {"CK", "IR", "WF", "MS", "IA", "TP", "CF"};
+  const uint16_t badgeColors[] = {UI_CYAN, UI_ORANGE, UI_CYAN, UI_GREEN, UI_PURPLE, UI_YELLOW, UI_MUTED};
 
   auto& d = M5.Display;
   d.fillRect(0, 28, 240, 92, UI_BG);
 
-  const int totalItems = 6;
-  int first = selected > 1 ? (selected >= 5 ? 3 : selected - 1) : 0;
+  const int totalItems = 7;
+  int first = selected > 1 ? (selected >= 6 ? 4 : selected - 1) : 0;
 
   for (int row = 0; row < 3; ++row) {
     const int item = first + row;
@@ -4160,7 +4396,7 @@ void drawScreen() {
 
 uint8_t itemCount() {
   switch (screen) {
-    case Screen::MAIN:                return 6;
+    case Screen::MAIN:                return 7;
     case Screen::WIFI_MENU:           return 4;
     case Screen::WIFI_SCANNING:       return 1;
     case Screen::WIFI_NETWORKS:       return scannedNetworkCount ? scannedNetworkCount : 1;
@@ -4200,7 +4436,19 @@ uint8_t itemCount() {
 }
 
 void nextItem() {
-  if (screen == Screen::SETTINGS_BRIGHTNESS) {
+  if (screen == Screen::SETTINGS_CLOCK) {
+    currentWatchfaceStyle = (currentWatchfaceStyle + 1) % 3;
+    prefs.begin("system", false);
+    prefs.putUChar("wf_style", currentWatchfaceStyle);
+    prefs.end();
+    if (M5.Speaker.isEnabled()) M5.Speaker.tone(1800, 30);
+    if (currentWatchfaceStyle == 0) showToast("ESTILO: CYBER HUD", 900);
+    else if (currentWatchfaceStyle == 1) showToast("ESTILO: BIG NEON", 900);
+    else showToast("ESTILO: MATRIX TERMINAL", 900);
+    forceFullRedraw = true;
+    redraw = true;
+    return;
+  } else if (screen == Screen::SETTINGS_BRIGHTNESS) {
     brightnessIndex = (brightnessIndex + 1) % 5;
     M5.Display.setBrightness(BRIGHTNESS_LEVELS[brightnessIndex]);
   } else if (screen == Screen::TEAM_CATTLE_LIMIT) {
@@ -4225,7 +4473,19 @@ void nextItem() {
 }
 
 void previousItem() {
-  if (screen == Screen::SETTINGS_BRIGHTNESS) {
+  if (screen == Screen::SETTINGS_CLOCK) {
+    currentWatchfaceStyle = (currentWatchfaceStyle + 2) % 3;
+    prefs.begin("system", false);
+    prefs.putUChar("wf_style", currentWatchfaceStyle);
+    prefs.end();
+    if (M5.Speaker.isEnabled()) M5.Speaker.tone(1800, 30);
+    if (currentWatchfaceStyle == 0) showToast("ESTILO: CYBER HUD", 900);
+    else if (currentWatchfaceStyle == 1) showToast("ESTILO: BIG NEON", 900);
+    else showToast("ESTILO: MATRIX TERMINAL", 900);
+    forceFullRedraw = true;
+    redraw = true;
+    return;
+  } else if (screen == Screen::SETTINGS_BRIGHTNESS) {
     brightnessIndex = (brightnessIndex + 4) % 5;
     M5.Display.setBrightness(BRIGHTNESS_LEVELS[brightnessIndex]);
   } else if (screen == Screen::TEAM_CATTLE_LIMIT) {
@@ -4260,13 +4520,25 @@ void goBack() {
         bleMouse.releaseAll();
       }
       screen = Screen::MAIN;
-      selected = 2;
+      selected = 3;
       redraw = true;
       return;
 
     case Screen::VOICE_AI:
       screen = Screen::MAIN;
-      selected = 3;
+      selected = 4;
+      redraw = true;
+      return;
+
+    case Screen::SETTINGS_CLOCK:
+      if (clockReturnToSettings) {
+        screen = Screen::SETTINGS_MENU;
+        selected = 1;
+      } else {
+        screen = Screen::MAIN;
+        selected = 0;
+      }
+      forceFullRedraw = true;
       redraw = true;
       return;
 
@@ -4331,7 +4603,6 @@ void goBack() {
       break;
 
     case Screen::SETTINGS_BRIGHTNESS:
-    case Screen::SETTINGS_CLOCK:
     case Screen::SETTINGS_SLEEP:
       screen = Screen::SETTINGS_MENU;
       break;
@@ -4370,9 +4641,14 @@ void goBack() {
 void executeSelected() {
   switch (screen) {
     case Screen::MAIN:
-      if (selected == 0) screen = Screen::IR_TYPES;
-      else if (selected == 1) screen = Screen::WIFI_MENU;
-      else if (selected == 2) {
+      if (selected == 0) {
+        clockReturnToSettings = false;
+        screen = Screen::SETTINGS_CLOCK;
+        forceFullRedraw = true;
+      }
+      else if (selected == 1) screen = Screen::IR_TYPES;
+      else if (selected == 2) screen = Screen::WIFI_MENU;
+      else if (selected == 3) {
         screen = Screen::MOUSE;
         startBleMouse();
         resetMouseCalibration();
@@ -4383,11 +4659,11 @@ void executeSelected() {
         mouseSmoothDx = 0.0f;
         mouseSmoothDy = 0.0f;
       }
-      else if (selected == 3) {
+      else if (selected == 4) {
         screen = Screen::VOICE_AI;
         initVoiceAiScreen();
       }
-      else if (selected == 4) screen = Screen::TEAM_MENU;
+      else if (selected == 5) screen = Screen::TEAM_MENU;
       else screen = Screen::SETTINGS_MENU;
       selected = 0;
       break;
@@ -4595,7 +4871,7 @@ void executeSelected() {
 
     case Screen::SETTINGS_MENU:
       if (selected == 0) screen = Screen::SETTINGS_BRIGHTNESS;
-      else if (selected == 1) screen = Screen::SETTINGS_CLOCK;
+      else if (selected == 1) { clockReturnToSettings = true; screen = Screen::SETTINGS_CLOCK; forceFullRedraw = true; }
       else screen = Screen::SETTINGS_SLEEP;
       selected = 0;
       break;
@@ -4609,13 +4885,29 @@ void executeSelected() {
 
     case Screen::SETTINGS_CLOCK:
       if (WiFi.status() == WL_CONNECTED) {
-        showToast("SINCRONIZANDO...", 1000);
+        if (M5.Speaker.isEnabled()) {
+          M5.Speaker.tone(1500, 50);
+          delay(60);
+          M5.Speaker.tone(2000, 70);
+        }
+        showToast("SINCRONIZANDO NTP...", 1000);
         syncClockFromInternet(-10800);
         lastWeatherAttemptAt = 0;
-        if (updateLocationAndWeather()) showToast("HORARIO ATUALIZADO", 1200);
-        else if (clockIsValid()) showToast("NTP SINCRONIZADO", 1200);
-        else showToast("FALHA NA INTERNET", 1400);
-      } else showToast("SEM INTERNET", 1200);
+        if (updateLocationAndWeather()) {
+          if (M5.Speaker.isEnabled()) M5.Speaker.tone(2400, 80);
+          showToast("HORARIO E CLIMA OK", 1200);
+        } else if (clockIsValid()) {
+          if (M5.Speaker.isEnabled()) M5.Speaker.tone(2200, 80);
+          showToast("NTP SINCRONIZADO", 1200);
+        } else {
+          showToast("FALHA NA INTERNET", 1400);
+        }
+      } else {
+        if (M5.Speaker.isEnabled()) M5.Speaker.tone(400, 120);
+        showToast("SEM WIFI (CONECTE NO HUB)", 1200);
+      }
+      forceFullRedraw = true;
+      redraw = true;
       break;
 
     case Screen::SETTINGS_SLEEP:
@@ -4860,16 +5152,23 @@ void loop() {
 
   // Atualização suave do relógio no cabeçalho dos menus e na tela de configuração
   static int lastClockMin = -1;
+  static int lastClockSec = -1;
   if (clockIsValid()) {
     time_t tnow = time(nullptr);
     tm tval;
     localtime_r(&tnow, &tval);
+
+    if (screen == Screen::SETTINGS_CLOCK) {
+      if (tval.tm_sec != lastClockSec) {
+        lastClockSec = tval.tm_sec;
+        redraw = true; // Atualizacao segundo a segundo para o Watchface!
+      }
+    }
+
     if (tval.tm_min != lastClockMin) {
       lastClockMin = tval.tm_min;
       if (isMenuScreen(screen)) {
-        updateStatusBarClock(); // Atualiza apenas o cantinho do relógio sem piscar a tela
-      } else if (screen == Screen::SETTINGS_CLOCK) {
-        redraw = true; // Na tela de ajuste do relógio, atualiza quando o minuto mudar
+        updateStatusBarClock();
       }
     }
   }
