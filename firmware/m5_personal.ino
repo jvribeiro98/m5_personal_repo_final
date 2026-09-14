@@ -412,7 +412,7 @@ uint8_t voiceWavePhase = 0;
 uint32_t voiceAnimTimer = 0;
 
 static constexpr size_t VOICE_SAMPLE_RATE = 16000;
-static constexpr size_t VOICE_MAX_SECS = 4;
+static constexpr size_t VOICE_MAX_SECS = 5;
 static constexpr size_t VOICE_BUFFER_BYTES = VOICE_SAMPLE_RATE * VOICE_MAX_SECS * sizeof(int16_t);
 static int16_t* voiceAudioBuffer = nullptr;
 static size_t voiceRecordedSamples = 0;
@@ -4349,13 +4349,22 @@ void initVoiceAiScreen() {
   voiceResultTitle = "";
   voiceResultBody = "";
   if (!voiceAudioBuffer) {
-    voiceAudioBuffer = (int16_t*)heap_caps_malloc(VOICE_BUFFER_BYTES, MALLOC_CAP_8BIT);
+    if (psramFound()) {
+      voiceAudioBuffer = (int16_t*)ps_malloc(VOICE_BUFFER_BYTES);
+    }
+    if (!voiceAudioBuffer) {
+      voiceAudioBuffer = (int16_t*)heap_caps_malloc(VOICE_BUFFER_BYTES, MALLOC_CAP_8BIT);
+    }
     if (!voiceAudioBuffer) {
       voiceAudioBuffer = (int16_t*)malloc(VOICE_BUFFER_BYTES);
     }
   }
   voiceRecordedSamples = 0;
   voiceMicRecordingActive = false;
+  auto mic_cfg = M5.Mic.config();
+  mic_cfg.magnification = 48;
+  M5.Mic.config(mic_cfg);
+  Serial.printf("[VOICE] Tela IA iniciada. Buffer: %p (PSRAM=%d)\n", voiceAudioBuffer, psramFound());
   Serial.println("VOICE_READY");
   redraw = true;
 }
@@ -4391,6 +4400,8 @@ void parseVoiceAiResponse(const String& line) {
   }
 }
 
+static uint32_t voiceRecStartTime = 0;
+
 void startVoiceRecording() {
   if (voiceState == VoiceState::LISTENING) return;
   voiceState = VoiceState::LISTENING;
@@ -4400,11 +4411,14 @@ void startVoiceRecording() {
   voiceResultBody = "";
   voiceScrollLine = 0;
   voiceWavePhase = 0;
+  voiceRecStartTime = millis();
+
   if (M5.Speaker.isEnabled()) M5.Speaker.tone(1200, 50);
   delay(60);
   M5.Speaker.end();
   M5.Mic.begin();
   voiceMicRecordingActive = true;
+  Serial.println("[VOICE] Gravacao iniciada pelo microfone SPM1423...");
   redraw = true;
 }
 
@@ -4417,9 +4431,13 @@ void stopVoiceRecordingAndSend() {
   voiceState = VoiceState::THINKING;
   redraw = true;
 
-  if (voiceRecordedSamples < 1600) {
-    voiceResultTitle = "MUITO CURTO";
-    voiceResultBody = "Clique [A], fale sua frase e clique [A] novamente.";
+  uint32_t recDurationMs = millis() - voiceRecStartTime;
+  Serial.printf("[VOICE] Gravacao finalizada: %u amostras (%ums)\n", (unsigned int)voiceRecordedSamples, recDurationMs);
+
+  // Se nao gravou amostras por falha de buffer, tenta alocar emergencial
+  if (voiceRecordedSamples < 1200 && recDurationMs < 400) {
+    voiceResultTitle = "CLIQUE E FALE";
+    voiceResultBody = "Clique [A], fale sua frase no M5Stick e clique [A] para enviar.";
     voiceState = VoiceState::RESULT;
     redraw = true;
     return;
@@ -4428,7 +4446,7 @@ void stopVoiceRecordingAndSend() {
   Serial.println("VOICE_STOP");
 
   bool sentOk = false;
-  if (WiFi.status() == WL_CONNECTED) {
+  if (WiFi.status() == WL_CONNECTED && voiceAudioBuffer && voiceRecordedSamples > 0) {
     HTTPClient http;
     String url = "http://" + pcBridgeIp + ":" + String(pcBridgePort) + "/audio";
     http.setConnectTimeout(1800);
@@ -4438,6 +4456,7 @@ void stopVoiceRecordingAndSend() {
       int code = http.POST((uint8_t*)voiceAudioBuffer, voiceRecordedSamples * sizeof(int16_t));
       if (code == 200) {
         String resp = http.getString();
+        Serial.printf("[VOICE] Resposta HTTP recebida: %s\n", resp.c_str());
         parseVoiceAiResponse(resp);
         sentOk = true;
       } else {
@@ -4447,7 +4466,7 @@ void stopVoiceRecordingAndSend() {
     }
   }
 
-  if (!sentOk) {
+  if (!sentOk && voiceAudioBuffer && voiceRecordedSamples > 0) {
     // Fallback via Serial
     Serial.printf("VOICE_AUDIO %u\n", (unsigned int)(voiceRecordedSamples * sizeof(int16_t)));
     Serial.write((const uint8_t*)voiceAudioBuffer, voiceRecordedSamples * sizeof(int16_t));
@@ -4665,15 +4684,11 @@ void processVoiceAiScreen() {
       M5.Speaker.begin();
       voiceState = VoiceState::IDLE;
     }
-    if (voiceAudioBuffer) {
-      free(voiceAudioBuffer);
-      voiceAudioBuffer = nullptr;
-    }
     goBack();
     return;
   }
 
-  // Botão B: se estiver em RESULT, rola o texto ou cancela para IDLE
+  // Botão B: se estiver em RESULT, rola o texto ou volta para IDLE
   if (M5.BtnB.wasClicked()) {
     if (voiceState == VoiceState::RESULT) {
       voiceScrollLine += 2;
@@ -4690,38 +4705,37 @@ void processVoiceAiScreen() {
     }
   }
 
-  static uint32_t voiceRecStartTime = 0;
   static uint32_t btnAPressTime = 0;
-  static bool btnAHeldDown = false;
+  static bool btnAHeld = false;
 
   if (M5.BtnA.wasPressed()) {
     btnAPressTime = millis();
-    btnAHeldDown = false;
-  }
-
-  // Modo segurar (> 350ms)
-  if (M5.BtnA.isPressed() && !btnAHeldDown && (millis() - btnAPressTime >= 350)) {
-    btnAHeldDown = true;
+    btnAHeld = false;
     if (voiceState != VoiceState::LISTENING) {
-      voiceRecStartTime = millis();
       startVoiceRecording();
     }
   }
 
+  // Se segurar por mais de 500ms, marca como HOLD
+  if (M5.BtnA.isPressed() && !btnAHeld && (millis() - btnAPressTime >= 500)) {
+    btnAHeld = true;
+  }
+
   // Quando soltar o botão:
   if (M5.BtnA.wasReleased()) {
-    if (btnAHeldDown) {
-      btnAHeldDown = false;
-      if (voiceState == VoiceState::LISTENING) {
-        stopVoiceRecordingAndSend();
-      }
-    } else {
-      // Clique rápido (< 350ms) -> Toggle!
-      if (voiceState != VoiceState::LISTENING) {
-        voiceRecStartTime = millis();
-        startVoiceRecording();
+    if (voiceState == VoiceState::LISTENING) {
+      uint32_t elapsed = millis() - voiceRecStartTime;
+      if (btnAHeld) {
+        // Estava segurando e soltou -> envia se ja gravou pelo menos 400ms
+        if (elapsed >= 400) {
+          stopVoiceRecordingAndSend();
+        }
       } else {
-        stopVoiceRecordingAndSend();
+        // Foi um clique simples. Se ja passou mais de 600ms gravando, finaliza.
+        // Se foi o clique inicial que comecou a gravacao (< 400ms), CONTINUA gravando livremente!
+        if (elapsed >= 600) {
+          stopVoiceRecordingAndSend();
+        }
       }
     }
   }
@@ -4729,7 +4743,7 @@ void processVoiceAiScreen() {
   // Gravacao ativa pelo microfone SPM1423 do M5Stick
   if (voiceState == VoiceState::LISTENING) {
     constexpr size_t CHUNK = 512;
-    if (voiceAudioBuffer && (voiceRecordedSamples + CHUNK <= VOICE_SAMPLE_RATE * VOICE_MAX_SECS)) {
+    if (voiceAudioBuffer && (voiceRecordedSamples + CHUNK <= VOICE_BUFFER_BYTES / sizeof(int16_t))) {
       if (M5.Mic.record(&voiceAudioBuffer[voiceRecordedSamples], CHUNK, VOICE_SAMPLE_RATE)) {
         while (M5.Mic.isRecording()) delay(1);
         voiceRecordedSamples += CHUNK;
@@ -4743,7 +4757,7 @@ void processVoiceAiScreen() {
     }
 
     // Auto-timeout de segurança após 4.2 segundos
-    if (voiceRecordedSamples >= VOICE_SAMPLE_RATE * VOICE_MAX_SECS || (millis() - voiceRecStartTime >= 4200)) {
+    if (millis() - voiceRecStartTime >= 4200) {
       stopVoiceRecordingAndSend();
     }
   }
