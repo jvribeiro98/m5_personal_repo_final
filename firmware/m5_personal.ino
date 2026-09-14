@@ -412,13 +412,14 @@ uint8_t voiceWavePhase = 0;
 uint32_t voiceAnimTimer = 0;
 
 static constexpr size_t VOICE_SAMPLE_RATE = 16000;
-static constexpr size_t VOICE_MAX_SECS = 5;
+static constexpr size_t VOICE_MAX_SECS = 12;
 static constexpr size_t VOICE_BUFFER_BYTES = VOICE_SAMPLE_RATE * VOICE_MAX_SECS * sizeof(int16_t);
 static int16_t* voiceAudioBuffer = nullptr;
 static size_t voiceRecordedSamples = 0;
 static String pcBridgeIp = "192.168.0.2";
 static int pcBridgePort = 5000;
 static bool voiceMicRecordingActive = false;
+static uint32_t lastVoiceResultAt = 0;
 
 void drawVoiceAiScreen();
 void processVoiceAiScreen();
@@ -4417,7 +4418,9 @@ void initVoiceAiScreen() {
   redraw = true;
 }
 
-void parseVoiceAiResponse(const String& line) {
+void parseVoiceAiResponse(const String& rawLine) {
+  String line = rawLine;
+  line.trim();
   if (line.startsWith("{") && line.endsWith("}")) {
     int titIdx = line.indexOf("\"title\":\"");
     if (titIdx != -1) {
@@ -4443,8 +4446,10 @@ void parseVoiceAiResponse(const String& line) {
     }
     voiceState = VoiceState::RESULT;
     voiceScrollLine = 0;
+    lastVoiceResultAt = millis();
     playWandChime();
     redraw = true;
+    Serial.printf("[VOICE PARSED] Titulo: %s | Agente: %s | Resp: %s\n", voiceResultTitle.c_str(), voiceActiveAgent.c_str(), voiceResultBody.c_str());
   }
 }
 
@@ -4468,6 +4473,7 @@ void startVoiceRecording() {
   voiceMicRecordingActive = true;
   Serial.println("[VOICE] Gravacao iniciada pelo microfone SPM1423...");
   redraw = true;
+  drawScreen();
 }
 
 void stopVoiceRecordingAndSend() {
@@ -4476,18 +4482,23 @@ void stopVoiceRecordingAndSend() {
   M5.Mic.end();
   M5.Speaker.begin();
   if (M5.Speaker.isEnabled()) M5.Speaker.tone(1600, 50);
+
+  // Mostra imediatamente o estado de envio/processamento na tela
   voiceState = VoiceState::THINKING;
   redraw = true;
+  drawScreen();
 
   uint32_t recDurationMs = millis() - voiceRecStartTime;
   Serial.printf("[VOICE] Gravacao finalizada: %u amostras (%ums)\n", (unsigned int)voiceRecordedSamples, recDurationMs);
 
-  // Se nao gravou amostras por falha de buffer, tenta alocar emergencial
+  // Se gravou menos de 400ms por toque rápido acidental
   if (voiceRecordedSamples < 1200 && recDurationMs < 400) {
     voiceResultTitle = "CLIQUE E FALE";
     voiceResultBody = "Clique [A], fale sua frase no M5Stick e clique [A] para enviar.";
     voiceState = VoiceState::RESULT;
+    lastVoiceResultAt = millis();
     redraw = true;
+    drawScreen();
     return;
   }
 
@@ -4504,6 +4515,7 @@ void stopVoiceRecordingAndSend() {
       int code = http.POST((uint8_t*)voiceAudioBuffer, voiceRecordedSamples * sizeof(int16_t));
       if (code == 200) {
         String resp = http.getString();
+        resp.trim();
         Serial.printf("[VOICE] Resposta HTTP recebida: %s\n", resp.c_str());
         parseVoiceAiResponse(resp);
         sentOk = true;
@@ -4520,18 +4532,23 @@ void stopVoiceRecordingAndSend() {
     Serial.write((const uint8_t*)voiceAudioBuffer, voiceRecordedSamples * sizeof(int16_t));
     Serial.println();
   }
+
+  // Limpa fila de toques nos botões que tenham ocorrido durante o bloqueio do HTTP
+  M5.update();
+  lastVoiceResultAt = millis();
+  redraw = true;
+  drawScreen();
 }
 
 void drawWrappedText(int x, int y, int maxW, int maxLines, int startLine, const String& text, uint16_t color) {
   auto& d = M5.Display;
   d.setTextSize(1);
-  d.setTextColor(color, UI_BG);
+  d.setTextColor(color, UI_PANEL);
   d.setTextDatum(top_left);
 
   int curX = x;
   int curY = y;
   int lineIdx = 0;
-  int drawnLines = 0;
   String word = "";
 
   for (size_t i = 0; i <= text.length(); ++i) {
@@ -4541,13 +4558,10 @@ void drawWrappedText(int x, int y, int maxW, int maxLines, int startLine, const 
         int wWidth = d.textWidth(word);
         if (curX + wWidth > x + maxW && curX > x) {
           curX = x;
+          curY += 12;
           lineIdx++;
-          if (lineIdx >= startLine && drawnLines < maxLines) {
-            curY += 12;
-            drawnLines++;
-          }
         }
-        if (lineIdx >= startLine && drawnLines < maxLines) {
+        if (lineIdx >= startLine && (lineIdx - startLine) < maxLines) {
           d.drawString(word, curX, curY);
         }
         curX += wWidth + d.textWidth(" ");
@@ -4555,11 +4569,8 @@ void drawWrappedText(int x, int y, int maxW, int maxLines, int startLine, const 
       }
       if (c == '\n') {
         curX = x;
+        curY += 12;
         lineIdx++;
-        if (lineIdx >= startLine && drawnLines < maxLines) {
-          curY += 12;
-          drawnLines++;
-        }
       }
     } else {
       word += c;
@@ -4615,7 +4626,7 @@ void drawVoiceAiScreen() {
     uint32_t elapsedMs = millis() - voiceRecStartTime;
     float elapsedSec = elapsedMs / 1000.0f;
     char secBuf[16];
-    snprintf(secBuf, sizeof(secBuf), "%.1fs / 4.2s", elapsedSec);
+    snprintf(secBuf, sizeof(secBuf), "%.1fs / 10.0s", elapsedSec);
     d.setTextDatum(middle_center);
     d.setTextColor(UI_TEXT, UI_PANEL);
     d.drawString(secBuf, 54, 102);
@@ -4751,38 +4762,27 @@ void processVoiceAiScreen() {
     }
   }
 
-  static uint32_t btnAPressTime = 0;
-  static bool btnAHeld = false;
-
+  // Botão A: Iniciar ou Parar gravação com proteção contra toques acidentais
   if (M5.BtnA.wasPressed()) {
-    btnAPressTime = millis();
-    btnAHeld = false;
-    if (voiceState != VoiceState::LISTENING) {
+    if (voiceState == VoiceState::IDLE) {
       startVoiceRecording();
+    } else if (voiceState == VoiceState::RESULT) {
+      // Ignora clique por 1.5 segundo após o resultado chegar para dar tempo de ler com calma
+      if (millis() - lastVoiceResultAt >= 1500) {
+        startVoiceRecording();
+      }
+    } else if (voiceState == VoiceState::LISTENING) {
+      // Se já gravou pelo menos 500ms, um novo clique no Botão A para e envia!
+      if (millis() - voiceRecStartTime >= 500) {
+        stopVoiceRecordingAndSend();
+      }
     }
   }
 
-  // Se segurar por mais de 500ms, marca como HOLD
-  if (M5.BtnA.isPressed() && !btnAHeld && (millis() - btnAPressTime >= 500)) {
-    btnAHeld = true;
-  }
-
-  // Quando soltar o botão:
-  if (M5.BtnA.wasReleased()) {
-    if (voiceState == VoiceState::LISTENING) {
-      uint32_t elapsed = millis() - voiceRecStartTime;
-      if (btnAHeld) {
-        // Estava segurando e soltou -> envia se ja gravou pelo menos 400ms
-        if (elapsed >= 400) {
-          stopVoiceRecordingAndSend();
-        }
-      } else {
-        // Foi um clique simples. Se ja passou mais de 600ms gravando, finaliza.
-        // Se foi o clique inicial que comecou a gravacao (< 400ms), CONTINUA gravando livremente!
-        if (elapsed >= 600) {
-          stopVoiceRecordingAndSend();
-        }
-      }
+  // Se o usuário preferir segurar e soltar para falar:
+  if (M5.BtnA.wasReleased() && voiceState == VoiceState::LISTENING) {
+    if (millis() - voiceRecStartTime >= 600) {
+      stopVoiceRecordingAndSend();
     }
   }
 
@@ -4802,8 +4802,8 @@ void processVoiceAiScreen() {
       redraw = true;
     }
 
-    // Auto-timeout de segurança após 4.2 segundos
-    if (millis() - voiceRecStartTime >= 4200) {
+    // Auto-timeout de segurança estendido para 10.0 segundos
+    if (millis() - voiceRecStartTime >= 10000) {
       stopVoiceRecordingAndSend();
     }
   }
