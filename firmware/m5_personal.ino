@@ -32,16 +32,19 @@ constexpr uint32_t BTN_C_DEBOUNCE_MS = 35;
 constexpr uint32_t BTN_C_HOLD_MS = 1200;
 
 // Cores RGB565.
-constexpr uint16_t UI_BG       = 0x0842;
-constexpr uint16_t UI_PANEL    = 0x10C4;
-constexpr uint16_t UI_BORDER   = 0x2948;
-constexpr uint16_t UI_SELECTED = 0x5F37; // Verde agua
-constexpr uint16_t UI_TEXT     = 0xFFFF;
-constexpr uint16_t UI_MUTED    = 0x9CD3;
-constexpr uint16_t UI_GREEN    = 0x5F37;
-constexpr uint16_t UI_RED      = 0xF800;
-constexpr uint16_t UI_YELLOW   = 0xF68D;
-constexpr uint16_t UI_ORANGE   = 0xFD20;
+constexpr uint16_t UI_BG         = 0x0000; // True Black OLED
+constexpr uint16_t UI_PANEL      = 0x1084; // Obsidian Slate
+constexpr uint16_t UI_PANEL_ALT  = 0x18C6; // Elevated Card
+constexpr uint16_t UI_BORDER     = 0x2126; // Subtle Border
+constexpr uint16_t UI_SELECTED   = 0x067F; // Electric Cyan
+constexpr uint16_t UI_TEXT       = 0xFFFF; // Pure White
+constexpr uint16_t UI_MUTED      = 0x8CD1; // Metallic Silver
+constexpr uint16_t UI_GREEN      = 0x27E8; // Cyber Mint
+constexpr uint16_t UI_RED        = 0xF9C7; // Coral Red
+constexpr uint16_t UI_YELLOW     = 0xFDE0; // Cyber Gold
+constexpr uint16_t UI_ORANGE     = 0xFD20; // Neon Orange
+constexpr uint16_t UI_PURPLE     = 0xB29F; // Magic Purple
+constexpr uint16_t UI_CYAN       = 0x05BF; // Bright Cyan
 
 // ============================================================
 // TIPOS - ficam antes de qualquer funcao para evitar problemas
@@ -2799,50 +2802,51 @@ void drawStatusBar() {
   auto& d = M5.Display;
   d.setTextSize(1);
 
-  // 1. Wi-Fi badge
+  // 1. Wi-Fi badge com indicador de status
   d.setTextDatum(middle_left);
   if (WiFi.status() == WL_CONNECTED) {
-    d.setTextColor(0x05BF, UI_PANEL); // Ciano Neon
-    d.drawString("WF", 122, 16);
+    d.fillCircle(123, 13, 3, UI_GREEN);
+    d.setTextColor(UI_CYAN, UI_BG);
+    d.drawString("WF", 129, 13);
   } else {
-    d.setTextColor(UI_MUTED, UI_PANEL);
-    d.drawString("--", 122, 16);
+    d.fillCircle(123, 13, 2, UI_MUTED);
+    d.setTextColor(UI_MUTED, UI_BG);
+    d.drawString("--", 129, 13);
   }
 
-  // 2. Bateria (Ícone gráfico + valor)
+  // 2. Bateria (Ícone moderno arredondado + valor)
   int battery = constrain(M5.Power.getBatteryLevel(), 0, 100);
   uint16_t bColor = UI_GREEN;
   if (battery <= 20 && !M5.Power.isCharging()) bColor = UI_RED;
-  else if (battery <= 45 && !M5.Power.isCharging()) bColor = UI_ORANGE;
+  else if (battery <= 45 && !M5.Power.isCharging()) bColor = UI_YELLOW;
 
-  constexpr int bx = 141;
-  constexpr int by = 12;
-  d.drawRect(bx, by, 16, 9, UI_BORDER);
-  d.fillRect(bx + 16, by + 2, 2, 5, UI_BORDER);
-  int fillW = map(battery, 0, 100, 0, 12);
+  constexpr int bx = 152;
+  constexpr int by = 9;
+  d.drawRoundRect(bx, by, 18, 9, 2, UI_BORDER);
+  d.fillRect(bx + 18, by + 2, 2, 5, UI_BORDER);
+  int fillW = map(battery, 0, 100, 0, 14);
   if (fillW > 0) d.fillRect(bx + 2, by + 2, fillW, 5, bColor);
 
   d.setTextDatum(middle_left);
-  d.setTextColor(bColor, UI_PANEL);
-  String batStr = String(battery) + "%";
-  if (M5.Power.isCharging()) batStr = "+";
-  d.drawString(batStr, bx + 20, 16);
+  d.setTextColor(bColor, UI_BG);
+  String batStr = M5.Power.isCharging() ? "+" : (String(battery) + "%");
+  d.drawString(batStr, bx + 22, 13);
 
-  // 3. Relógio em destaque (Amarelo de alto contraste)
+  // 3. Relogio digital de alto contraste
   d.setTextDatum(middle_right);
-  d.setTextColor(clockIsValid() ? UI_YELLOW : UI_MUTED, UI_PANEL);
-  d.drawString(clockTimeText(), 232, 16);
+  d.setTextColor(clockIsValid() ? UI_YELLOW : UI_MUTED, UI_BG);
+  d.drawString(clockTimeText(), 234, 13);
 }
 
 void updateStatusBarClock() {
   if (!isMenuScreen(screen)) return;
   auto& d = M5.Display;
   d.startWrite();
-  d.fillRect(200, 5, 34, 22, UI_PANEL);
+  d.fillRect(195, 2, 42, 23, UI_BG);
   d.setTextDatum(middle_right);
   d.setTextSize(1);
-  d.setTextColor(clockIsValid() ? UI_YELLOW : UI_MUTED, UI_PANEL);
-  d.drawString(clockTimeText(), 232, 16);
+  d.setTextColor(clockIsValid() ? UI_YELLOW : UI_MUTED, UI_BG);
+  d.drawString(clockTimeText(), 234, 13);
   d.endWrite();
 }
 
@@ -3020,83 +3024,105 @@ void drawSettingsSleep() {
 
 void drawFooter() {
   auto& display = M5.Display;
-  display.fillRect(0, 123, 240, 12, UI_BG);
+  display.fillRect(0, 120, 240, 15, UI_BG);
   display.setTextSize(1);
 
   if (toast.length() && millis() < toastUntil) {
+    display.fillRoundRect(8, 119, 224, 15, 3, UI_PANEL_ALT);
     display.setTextDatum(middle_center);
-    display.setTextColor(UI_GREEN, UI_BG);
-    display.drawString(toast, 120, 128);
+    display.setTextColor(UI_GREEN, UI_PANEL_ALT);
+    display.drawString(toast, 120, 126);
   } else if (screen == Screen::MOUSE) {
     display.setTextDatum(middle_left);
     display.setTextColor(UI_MUTED, UI_BG);
-    display.drawString("Click:Esq  Segura:Dir  C:Sair", 8, 128);
+    display.drawString("A:Esq  B:Dir  C:Sair", 8, 127);
 
     display.setTextDatum(middle_right);
-    display.setTextColor(0x05BF, UI_BG); // Ciano
-    display.drawString("AIR MOUSE", 232, 128);
+    display.setTextColor(UI_CYAN, UI_BG);
+    display.drawString("AIR MOUSE", 232, 127);
   } else {
     toast = "";
+    // Pilulas modernas estilo console gamer
+    display.fillRoundRect(8, 121, 14, 11, 2, UI_ORANGE);
+    display.setTextColor(UI_BG, UI_ORANGE);
+    display.setTextDatum(middle_center);
+    display.drawString("A", 15, 126);
+    display.setTextColor(UI_TEXT, UI_BG);
     display.setTextDatum(middle_left);
-    display.setTextColor(UI_MUTED, UI_BG);
-    display.drawString("A:OK  B:>  C:<", 8, 128);
+    display.drawString("OK", 25, 126);
 
-    display.setTextDatum(middle_right);
-    display.setTextColor(0x05BF, UI_BG); // Ciano
-    display.drawString("B:seg voltar", 232, 128);
+    display.fillRoundRect(64, 121, 14, 11, 2, UI_CYAN);
+    display.setTextColor(UI_BG, UI_CYAN);
+    display.setTextDatum(middle_center);
+    display.drawString("B", 71, 126);
+    display.setTextColor(UI_TEXT, UI_BG);
+    display.setTextDatum(middle_left);
+    display.drawString("Descer", 81, 126);
+
+    display.fillRoundRect(140, 121, 14, 11, 2, UI_MUTED);
+    display.setTextColor(UI_BG, UI_MUTED);
+    display.setTextDatum(middle_center);
+    display.drawString("C", 147, 126);
+    display.setTextColor(UI_TEXT, UI_BG);
+    display.setTextDatum(middle_left);
+    display.drawString("Voltar", 157, 126);
   }
 }
 
 void drawTitle(const String& title, const String& subtitle) {
   auto& display = M5.Display;
-  display.fillRoundRect(4, 2, 232, 30, 5, UI_PANEL);
-  display.fillRect(10, 10, 2, 14, UI_SELECTED);
+  display.fillRect(0, 0, 240, 27, UI_BG);
+  display.fillRoundRect(4, 4, 3, 18, 1, UI_SELECTED);
 
   display.setTextDatum(middle_left);
   if (title.length() > 8) {
     display.setTextSize(1);
-    display.setTextColor(UI_TEXT, UI_PANEL);
-    display.drawString(title, 17, 17);
+    display.setTextColor(UI_TEXT, UI_BG);
+    display.drawString(title, 12, 13);
   } else {
     display.setTextSize(2);
-    display.setTextColor(UI_TEXT, UI_PANEL);
-    display.drawString(title, 17, 17);
+    display.setTextColor(UI_TEXT, UI_BG);
+    display.drawString(title, 12, 13);
   }
+
+  display.drawFastHLine(0, 26, 240, UI_BORDER);
 
   if (isMenuScreen(screen)) {
     drawStatusBar();
   } else if (subtitle.length()) {
     display.setTextDatum(middle_right);
     display.setTextSize(1);
-    display.setTextColor(UI_YELLOW, UI_PANEL);
-    display.drawString(subtitle, 230, 17);
+    display.setTextColor(UI_YELLOW, UI_BG);
+    display.drawString(subtitle, 234, 13);
   }
 }
 
 void drawListItem(uint8_t index, int y, const String& label, const String& detail) {
   auto& display = M5.Display;
   const bool active = selected == index;
-  const uint16_t fill = active ? UI_SELECTED : UI_PANEL;
-  const uint16_t foreground = active ? UI_BG : UI_TEXT;
+  const uint16_t fill = active ? UI_PANEL_ALT : UI_PANEL;
+  const uint16_t border = active ? UI_SELECTED : UI_BORDER;
 
-  display.fillRoundRect(8, y, 224, 20, 4, fill);
-  if (active) display.fillRoundRect(9, y + 5, 3, 10, 1, UI_BG);
-  display.setTextSize(1);
+  display.fillRoundRect(6, y, 228, 22, 4, fill);
+  display.drawRoundRect(6, y, 228, 22, 4, border);
+
+  if (active) {
+    display.fillRoundRect(8, y + 4, 3, 14, 1, UI_SELECTED);
+  }
 
   const int detailWidth = detail.length() ? min<int>(72, static_cast<int>(display.textWidth(detail)) + 10) : 0;
-  const int labelX = 14;
-  const int labelRight = 224 - detailWidth;
+  const int labelX = active ? 16 : 12;
+  const int labelRight = 228 - detailWidth;
   const int labelWidth = max(20, labelRight - labelX);
 
   display.setTextDatum(middle_left);
   display.setTextSize(1);
-  display.setTextColor(foreground, fill);
+  display.setTextColor(active ? UI_TEXT : UI_MUTED, fill);
 
-  display.setClipRect(labelX, y + 1, labelWidth, 18);
+  display.setClipRect(labelX, y + 1, labelWidth, 20);
   int textWidth = display.textWidth(label);
   int offset = 0;
 
-  // O item selecionado faz rolagem horizontal suave quando o nome não cabe.
   if (active && textWidth > labelWidth) {
     const int travel = textWidth - labelWidth + 18;
     const uint32_t cycle = 900 + travel * 35 + 900;
@@ -3106,13 +3132,13 @@ void drawListItem(uint8_t index, int y, const String& label, const String& detai
     else offset = travel;
   }
 
-  display.drawString(label, labelX - offset, y + 10);
+  display.drawString(label, labelX - offset, y + 11);
   display.clearClipRect();
 
   if (detail.length()) {
     display.setTextDatum(middle_right);
-    display.setTextColor(active ? UI_BG : UI_MUTED, fill);
-    display.drawString(detail, 224, y + 10);
+    display.setTextColor(active ? UI_YELLOW : UI_MUTED, fill);
+    display.drawString(detail, 226, y + 11);
   }
 }
 
@@ -3120,19 +3146,19 @@ void drawGridButton(uint8_t index, int x, int y, int w, int h,
                     const String& label, const String& value) {
   auto& display = M5.Display;
   const bool active = selected == index;
-  const uint16_t fill = active ? UI_SELECTED : UI_PANEL;
-  const uint16_t border = active ? UI_TEXT : UI_BORDER;
-  const uint16_t foreground = active ? UI_BG : UI_TEXT;
+  const uint16_t fill = active ? UI_PANEL_ALT : UI_PANEL;
+  const uint16_t border = active ? UI_SELECTED : UI_BORDER;
+  const uint16_t foreground = active ? UI_TEXT : UI_MUTED;
 
-  display.fillRoundRect(x, y, w, h, 6, fill);
-  display.drawRoundRect(x, y, w, h, 6, border);
+  display.fillRoundRect(x, y, w, h, 4, fill);
+  display.drawRoundRect(x, y, w, h, 4, border);
   display.setTextDatum(middle_center);
   display.setTextSize(1);
   display.setTextColor(foreground, fill);
 
   if (value.length()) {
     display.drawString(label, x + w / 2, y + 9);
-    display.setTextColor(active ? UI_BG : UI_YELLOW, fill);
+    display.setTextColor(active ? UI_YELLOW : UI_MUTED, fill);
     display.drawString(value, x + w / 2, y + 22);
   } else {
     display.drawString(label, x + w / 2, y + h / 2);
@@ -3141,29 +3167,63 @@ void drawGridButton(uint8_t index, int x, int y, int w, int h,
 
 void drawMain() {
   drawTitle("M5 PERSONAL");
-  const char* labels[] = {"Controle IR", "Wi-Fi", "Air Mouse", "Gestos IA", "Team Penning", "Ajustes"};
-  const char* notes[] = {"TV e ar-condicionado", "Redes e controle web", "Aponte, clique, arraste", "Varinha magica 3D", "Contagem e treinos", "Tela, relogio e repouso"};
-  auto& d = M5.Display;
-  d.fillRect(0, 34, 240, 88, UI_BG);
-  const int first = (selected / 2) * 2;
-  for (int row = 0; row < 2; ++row) {
-    const int item = first + row;
-    if (item >= 6) break;
-    const int y = 37 + row * 41;
-    const bool active = selected == item;
-    const uint16_t bg = active ? UI_SELECTED : UI_PANEL;
-    d.fillRoundRect(8, y, 215, 37, 7, bg);
-    d.setTextDatum(middle_left);
-    d.setTextSize(2);
-    d.setTextColor(active ? UI_BG : UI_TEXT, bg);
-    d.drawString(labels[item], 17, y + 12);
-    d.setTextSize(1);
-    d.setTextColor(active ? UI_BG : UI_MUTED, bg);
-    d.drawString(notes[item], 17, y + 28);
-  }
-  for (int i = 0; i < 6; ++i) d.fillCircle(231, 40 + 9*i, 2, selected == i ? UI_SELECTED : UI_BORDER);
-}
+  const char* labels[] = {"Controle IR", "Wi-Fi Hub", "Air Mouse", "Gestos IA", "Team Penning", "Ajustes"};
+  const char* notes[]  = {"TV e ar-condicionado", "Redes e controle web", "Apontador Bluetooth", "Varinha magica 3D", "Contagem e treinos", "Tela, relogio, repouso"};
+  const char* badges[] = {"IR", "WF", "MS", "IA", "TP", "CF"};
+  const uint16_t badgeColors[] = {UI_ORANGE, UI_CYAN, UI_GREEN, UI_PURPLE, UI_YELLOW, UI_MUTED};
 
+  auto& d = M5.Display;
+  d.fillRect(0, 28, 240, 92, UI_BG);
+
+  const int totalItems = 6;
+  int first = selected > 1 ? (selected >= 5 ? 3 : selected - 1) : 0;
+
+  for (int row = 0; row < 3; ++row) {
+    const int item = first + row;
+    if (item >= totalItems) break;
+    const int y = 29 + row * 29;
+    const bool active = selected == item;
+    const uint16_t cardBg = active ? UI_PANEL_ALT : UI_PANEL;
+    const uint16_t border = active ? UI_SELECTED : UI_BORDER;
+
+    d.fillRoundRect(6, y, 218, 26, 4, cardBg);
+    d.drawRoundRect(6, y, 218, 26, 4, border);
+
+    if (active) {
+      d.fillRoundRect(8, y + 4, 3, 18, 1, UI_SELECTED);
+    }
+
+    // Badge de categoria
+    d.fillRoundRect(16, y + 4, 22, 18, 3, active ? badgeColors[item] : UI_PANEL);
+    d.drawRoundRect(16, y + 4, 22, 18, 3, badgeColors[item]);
+    d.setTextDatum(middle_center);
+    d.setTextSize(1);
+    d.setTextColor(active ? UI_BG : badgeColors[item], active ? badgeColors[item] : UI_PANEL);
+    d.drawString(badges[item], 27, y + 13);
+
+    // Titulo
+    d.setTextDatum(middle_left);
+    d.setTextSize(1);
+    d.setTextColor(active ? UI_TEXT : UI_MUTED, cardBg);
+    d.drawString(labels[item], 43, y + 8);
+
+    // Subtitulo / Nota
+    d.setTextColor(active ? UI_YELLOW : UI_MUTED, cardBg);
+    d.drawString(notes[item], 43, y + 19);
+
+    // Indicador direito
+    if (active) {
+      d.setTextDatum(middle_right);
+      d.setTextColor(UI_SELECTED, cardBg);
+      d.drawString(">", 216, y + 13);
+    }
+  }
+
+  // Barra de rolagem lateral moderna
+  d.drawFastVLine(232, 31, 84, UI_BORDER);
+  int thumbY = 31 + (selected * 70) / (totalItems - 1);
+  d.fillRoundRect(230, thumbY, 5, 14, 2, UI_SELECTED);
+}
 
 void drawWifiMenu() {
   drawTitle("WIFI", WiFi.status() == WL_CONNECTED ? WiFi.SSID() : "DESCONECTADO");
@@ -3685,10 +3745,12 @@ void executeGestureAction(GestureType type) {
       playWandChime();
       break;
     case GESTURE_SWIPE_UP:
+    case GESTURE_ROLL_CW:
       sendTvCommand(TV_VOL_UP);
       playWandChime();
       break;
     case GESTURE_SWIPE_DOWN:
+    case GESTURE_ROLL_CCW:
       sendTvCommand(TV_VOL_DOWN);
       playWandChime();
       break;
@@ -3740,81 +3802,111 @@ void initGestureScreen() {
 
 void drawGestureScreen() {
   auto& d = M5.Display;
-  d.setTextSize(1);
-  d.setTextDatum(middle_left);
-  d.setTextColor(UI_MUTED, UI_BG);
-  d.drawString("M5 / VARINHA", 9, 10);
-  d.setTextSize(2);
-  d.setTextColor(UI_TEXT, UI_BG);
-  d.drawString("Gestos IA", 9, 25);
+  d.fillRect(0, 0, 135, 240, UI_BG);
 
-  // Barra de status
-  d.fillRoundRect(8, 36, 119, 20, 4, UI_PANEL);
+  // Topo: Header Holografico
+  d.fillRoundRect(6, 4, 123, 24, 4, UI_PANEL);
+  d.drawRoundRect(6, 4, 123, 24, 4, UI_BORDER);
+  d.fillRoundRect(9, 7, 18, 18, 3, UI_PURPLE);
   d.setTextDatum(middle_center);
   d.setTextSize(1);
+  d.setTextColor(UI_BG, UI_PURPLE);
+  d.drawString("IA", 18, 16);
+  d.setTextDatum(middle_left);
+  d.setTextColor(UI_TEXT, UI_PANEL);
+  d.drawString("VARINHA 3D", 32, 16);
+
+  // Barra de status de gesto
+  d.fillRoundRect(6, 32, 123, 20, 3, UI_PANEL_ALT);
+  d.drawRoundRect(6, 32, 123, 20, 3, UI_BORDER);
+  d.setTextDatum(middle_center);
   if (gestureRecognizer.isRecording()) {
-    d.setTextColor(UI_SELECTED, UI_PANEL);
-    d.drawString("DESENHANDO...", 67, 46);
+    d.setTextColor(UI_YELLOW, UI_PANEL_ALT);
+    d.drawString("DESENHANDO...", 67, 42);
   } else if (gestureHasResult && lastGestureResult.type != GESTURE_NONE) {
-    d.setTextColor(lastGestureResult.color, UI_PANEL);
-    d.drawString(lastGestureResult.name, 67, 46);
+    d.setTextColor(lastGestureResult.color, UI_PANEL_ALT);
+    d.drawString(lastGestureResult.name, 67, 42);
   } else {
-    d.setTextColor(UI_YELLOW, UI_PANEL);
-    d.drawString("SEGURE [ A ]", 67, 46);
+    d.setTextColor(UI_CYAN, UI_PANEL_ALT);
+    d.drawString("SEGURE [ A ]", 67, 42);
   }
 
-  // Borda do canvas
-  d.drawRoundRect(8, 59, 119, 96, 5, UI_BORDER);
-  d.fillRect(9, 60, 117, 94, UI_BG);
+  // Canvas de desenho (Centro em 67, 109)
+  d.drawRoundRect(6, 56, 123, 106, 5, UI_BORDER);
+  d.fillRect(7, 57, 121, 104, UI_BG);
 
   if (!gestureRecognizer.isRecording() && !gestureHasResult) {
-    // Tabela guia de magias
+    // Reticulo sutil central
+    d.drawFastHLine(63, 109, 9, UI_BORDER);
+    d.drawFastVLine(67, 105, 9, UI_BORDER);
+
+    // Guia rapido de magias
     d.setTextDatum(middle_left);
     d.setTextSize(1);
     d.setTextColor(UI_YELLOW, UI_BG);
-    d.drawString("O  Circulo -> TV Pwr", 13, 73);
+    d.drawString("O  Circulo -> TV Pwr", 12, 70);
     d.setTextColor(UI_GREEN, UI_BG);
-    d.drawString("V  Letra V -> Mudo", 13, 89);
-    d.setTextColor(0x05BF, UI_BG); // Ciano
-    d.drawString("Z  Letra Z -> Ar Pwr", 13, 105);
-    d.setTextColor(UI_SELECTED, UI_BG);
-    d.drawString("^  Swipe   -> Vol +", 13, 121);
+    d.drawString("V  Letra V -> Mudo", 12, 86);
+    d.setTextColor(UI_CYAN, UI_BG);
+    d.drawString("Z  Letra Z -> Ar Pwr", 12, 102);
+    d.setTextColor(UI_ORANGE, UI_BG);
+    d.drawString("^v Swipes  -> Vol/Canal", 12, 118);
+    d.setTextColor(UI_PURPLE, UI_BG);
+    d.drawString("~  Girar   -> Vol +/-", 12, 134);
     d.setTextColor(UI_MUTED, UI_BG);
-    d.drawString("v  Swipe   -> Vol -", 13, 137);
+    d.drawString("-> Estocar -> TV OK", 12, 149);
   } else if (gestureHasResult) {
     d.setTextDatum(middle_center);
     d.setTextSize(3);
     d.setTextColor(lastGestureResult.color, UI_BG);
-    d.drawString(lastGestureResult.symbol, 67, 90);
+    d.drawString(lastGestureResult.symbol, 67, 85);
+
+    int conf = constrain((int)lastGestureResult.confidence, 0, 100);
+    d.drawRoundRect(27, 106, 82, 8, 2, UI_BORDER);
+    int barW = (conf * 78) / 100;
+    if (barW > 0) d.fillRect(29, 108, barW, 4, lastGestureResult.color);
 
     d.setTextSize(1);
     d.setTextColor(UI_MUTED, UI_BG);
-    d.drawString(String((int)lastGestureResult.confidence) + "% confianca", 67, 116);
-    d.setTextColor(UI_SELECTED, UI_BG);
-    d.drawString(lastGestureResult.action, 67, 135);
+    d.drawString(String(conf) + "% confianca", 67, 123);
+    d.setTextColor(UI_TEXT, UI_BG);
+    d.drawString(lastGestureResult.action, 67, 142);
   }
 
-  // Painel de acao
-  d.fillRoundRect(8, 158, 119, 56, 5, UI_PANEL);
+  // Painel de instrucoes
+  d.fillRoundRect(6, 166, 123, 50, 4, UI_PANEL);
+  d.drawRoundRect(6, 166, 123, 50, 4, UI_BORDER);
   d.setTextDatum(middle_left);
   d.setTextSize(1);
-  d.setTextColor(UI_SELECTED, UI_PANEL);
-  d.drawString("A", 16, 170);
-  d.setTextColor(UI_TEXT, UI_PANEL);
-  d.drawString("Segure e desenhe", 30, 170);
 
-  d.setTextColor(UI_SELECTED, UI_PANEL);
-  d.drawString("B", 16, 188);
+  d.fillRoundRect(12, 172, 12, 12, 2, UI_ORANGE);
+  d.setTextColor(UI_BG, UI_ORANGE);
+  d.setTextDatum(middle_center);
+  d.drawString("A", 18, 178);
+  d.setTextDatum(middle_left);
   d.setTextColor(UI_TEXT, UI_PANEL);
-  d.drawString("Limpar tela", 30, 188);
+  d.drawString("Segure e mova", 30, 178);
 
+  d.fillRoundRect(12, 188, 12, 12, 2, UI_CYAN);
+  d.setTextColor(UI_BG, UI_CYAN);
+  d.setTextDatum(middle_center);
+  d.drawString("A", 18, 194);
+  d.setTextDatum(middle_left);
+  d.setTextColor(UI_TEXT, UI_PANEL);
+  d.drawString("Solte p/ disparar", 30, 194);
+
+  d.fillRoundRect(12, 203, 12, 10, 2, UI_MUTED);
+  d.setTextColor(UI_BG, UI_MUTED);
+  d.setTextDatum(middle_center);
+  d.drawString("B", 18, 208);
+  d.setTextDatum(middle_left);
   d.setTextColor(UI_MUTED, UI_PANEL);
-  d.drawString("Solte A p/ executar", 16, 204);
+  d.drawString("Limpar resultado", 30, 208);
 
   // Rodape
   d.setTextDatum(middle_center);
   d.setTextColor(UI_MUTED, UI_BG);
-  d.drawString("C: voltar ao menu", 67, 227);
+  d.drawString("C: voltar ao menu", 67, 228);
 }
 
 void processGestureScreen() {
@@ -3841,8 +3933,9 @@ void processGestureScreen() {
   // Segurando Botao A: amostra IMU e desenha rastro visual
   if (M5.BtnA.isPressed()) {
     float gx = 0, gy = 0, gz = 0, ax = 0, ay = 0, az = 0;
-    if (M5.Imu.getGyro(&gx, &gy, &gz) && M5.Imu.getAccel(&ax, &ay, &az)) {
-      gestureRecognizer.sample(gx, gy, gz, ax, ay, az);
+    if (M5.Imu.getGyro(&gx, &gy, &gz) && M5.Imu.getAccel(&ax, &ay, &az) &&
+        isfinite(gx) && isfinite(gy) && isfinite(gz)) {
+      gestureRecognizer.sample(gx, gy, gz, ax, ay, az, millis());
 
       int count = gestureRecognizer.getRawPointCount();
       if (count > lastGestureCanvasPoints && count >= 2) {
@@ -3850,10 +3943,11 @@ void processGestureScreen() {
         d.startWrite();
         const GesturePoint* pts = gestureRecognizer.getRawPoints();
         for (int i = max(1, lastGestureCanvasPoints); i < count; ++i) {
-          int x1 = 67 + constrain((int)(pts[i - 1].x * 35.0f), -50, 50);
-          int y1 = 107 + constrain((int)(pts[i - 1].y * 35.0f), -40, 40);
-          int x2 = 67 + constrain((int)(pts[i].x * 35.0f), -50, 50);
-          int y2 = 107 + constrain((int)(pts[i].y * 35.0f), -40, 40);
+          // Escala calibrada: 1 grau de rotacao = 1.15 pixels no canvas
+          int x1 = 67 + constrain((int)(pts[i - 1].x * 1.15f), -52, 52);
+          int y1 = 109 + constrain((int)(pts[i - 1].y * 1.15f), -44, 44);
+          int x2 = 67 + constrain((int)(pts[i].x * 1.15f), -52, 52);
+          int y2 = 109 + constrain((int)(pts[i].y * 1.15f), -44, 44);
           d.drawLine(x1, y1, x2, y2, UI_SELECTED);
           d.fillCircle(x2, y2, 2, UI_YELLOW);
         }
@@ -3867,7 +3961,7 @@ void processGestureScreen() {
   if (M5.BtnA.wasReleased()) {
     lastGestureResult = gestureRecognizer.finishAndClassify();
     gestureHasResult = true;
-    gestureResultUntil = millis() + 4000;
+    gestureResultUntil = millis() + 4500;
     if (lastGestureResult.type != GESTURE_NONE) {
       executeGestureAction(lastGestureResult.type);
     } else {
@@ -4480,7 +4574,7 @@ void setup() {
 }
 
 void loop() {
-  if (screen != Screen::MOUSE) {
+  if (screen != Screen::MOUSE && screen != Screen::GESTURE_AI) {
     if (webServerRunning) webServer.handleClient();
     processWifiConnection();
     processWifiMaintenance();
@@ -4488,7 +4582,7 @@ void loop() {
 
   M5.update();
   buttonC.update();
-  if (screen != Screen::MOUSE) processWeatherAndClock();
+  if (screen != Screen::MOUSE && screen != Screen::GESTURE_AI) processWeatherAndClock();
 
   static bool previousCPressed = false;
   const bool cPressedNow = buttonC.stablePressed;

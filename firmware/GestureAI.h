@@ -1,14 +1,18 @@
+#ifndef GESTURE_AI_H
+#define GESTURE_AI_H
+
 #if defined(ARDUINO)
 #include <Arduino.h>
 #else
 #include <cstdint>
 #include <cmath>
 #include <algorithm>
+#include <cstring>
 #endif
 #include <cmath>
 
 // ============================================================
-// GESTURE AI - Reconhecimento Inercial 3D de Gestos no Ar
+// GESTURE AI - Motor Inercial 3D de Reconhecimento no Ar
 // M5StickC Plus 2 (MPU6886 IMU)
 // ============================================================
 
@@ -22,6 +26,8 @@ enum GestureType : uint8_t {
     GESTURE_SWIPE_DOWN,
     GESTURE_SWIPE_LEFT,
     GESTURE_SWIPE_RIGHT,
+    GESTURE_ROLL_CW,
+    GESTURE_ROLL_CCW,
     GESTURE_THRUST,
     GESTURE_COUNT
 };
@@ -42,18 +48,20 @@ struct GestureResult {
 
 class GestureRecognizer {
 public:
-    static constexpr int MAX_RAW_POINTS = 128;
-    static constexpr int N_POINTS = 32;
+    static constexpr int MAX_RAW_POINTS = 160;
 
-    GestureRecognizer() : _rawCount(0), _recording(false), _lastSampleMs(0), _accumX(0.0f), _accumY(0.0f) {}
+    GestureRecognizer() : _rawCount(0), _recording(false), _lastSampleMs(0),
+                          _accumX(0.0f), _accumY(0.0f), _accumRoll(0.0f),
+                          _maxThrustG(0.0f), _biasGx(0.0f), _biasGz(0.0f) {}
 
     void startRecording() {
         _rawCount = 0;
         _accumX = 0.0f;
         _accumY = 0.0f;
-        _recording = true;
-        _lastSampleMs = millis();
+        _accumRoll = 0.0f;
         _maxThrustG = 0.0f;
+        _recording = true;
+        _lastSampleMs = 0;
     }
 
     bool isRecording() const {
@@ -68,26 +76,47 @@ public:
         return _rawPoints;
     }
 
-    // Amostragem contínua enquanto o botão está pressionado (~50 Hz)
-    void sample(float gx, float gy, float gz, float ax, float ay, float az) {
-        if (!_recording) return;
-        uint32_t now = millis();
-        if (now - _lastSampleMs < 18) return; // Limita a aprox 50Hz
-        float dt = (now - _lastSampleMs) / 1000.0f;
-        if (dt > 0.1f) dt = 0.02f;
-        _lastSampleMs = now;
+    float getAccumRoll() const {
+        return _accumRoll;
+    }
 
-        // Movimento angular da ponta do M5Stick:
-        // Yaw (gz) -> deslocamento X horizontal
-        // Pitch (gx) -> deslocamento Y vertical
-        float vx = -gz * dt;
-        float vy = -gx * dt;
+    // Amostragem contínua enquanto o botão está pressionado (~50-80 Hz)
+    void sample(float gx, float gy, float gz, float ax, float ay, float az, uint32_t nowMs) {
+        if (!_recording) return;
+
+        if (_lastSampleMs == 0) {
+            _lastSampleMs = nowMs;
+            _biasGx = gx;
+            _biasGz = gz;
+            _rawPoints[0].x = 0.0f;
+            _rawPoints[0].y = 0.0f;
+            _rawCount = 1;
+            return;
+        }
+
+        uint32_t diff = nowMs - _lastSampleMs;
+        if (diff < 12) return; // Limita taxa maxima de amostragem (~70Hz)
+        float dt = diff / 1000.0f;
+        if (dt > 0.08f) dt = 0.02f;
+        _lastSampleMs = nowMs;
+
+        // Suave filtro para eliminar bias estático inicial
+        float egx = gx - _biasGx * 0.4f;
+        float egz = gz - _biasGz * 0.4f;
+
+        // Deslocamento angular acumulado (em graus):
+        // Pitch (gx): mover para cima/baixo
+        // Yaw (gz): mover para esquerda/direita
+        // Roll (gy): torcer o pulso como chave/dial
+        float vx = -egz * dt;
+        float vy = -egx * dt;
+        _accumRoll += gy * dt;
 
         _accumX += vx;
         _accumY += vy;
 
-        // Monitora pico de estocada (aceleração para frente no eixo Y/Z)
-        float thrust = fabsf(ay) + fabsf(az);
+        // Aceleração resultante de impacto frontal (estocada)
+        float thrust = sqrtf(ax * ax + ay * ay + az * az);
         if (thrust > _maxThrustG) _maxThrustG = thrust;
 
         if (_rawCount < MAX_RAW_POINTS) {
@@ -105,150 +134,216 @@ public:
         res.name = "NAO RECONHECIDO";
         res.action = "Tente novamente";
         res.symbol = "?";
-        res.color = 0x9CD3; // UI_MUTED
+        res.color = 0x8CD1; // Slate
 
-        if (_rawCount < 12) {
+        if (_rawCount < 8) {
             res.action = "Movimento muito curto";
             return res;
         }
 
-        // 1. Checa se foi uma estocada direta (Punch / Thrust para frente)
-        if (_maxThrustG > 2.8f && getPathLength(_rawPoints, _rawCount) < 0.15f) {
+        // 1. Giro de Pulso (Twist / Roll)
+        // Se girou o punho sem desenhar muito no ar
+        float totalDisp = distance(_rawPoints[0], _rawPoints[_rawCount - 1]);
+        if (fabsf(_accumRoll) > 40.0f && totalDisp < 30.0f) {
+            if (_accumRoll > 0.0f) {
+                res.type = GESTURE_ROLL_CW;
+                res.confidence = 94.0f;
+                res.name = "GIRO HORARIO";
+                res.action = "TV VOLUME +";
+                res.symbol = "(+)";
+                res.color = 0x27E8; // Cyber mint
+                return res;
+            } else {
+                res.type = GESTURE_ROLL_CCW;
+                res.confidence = 94.0f;
+                res.name = "GIRO ANTI-HORARIO";
+                res.action = "TV VOLUME -";
+                res.symbol = "(-)";
+                res.color = 0xF9C7; // Coral
+                return res;
+            }
+        }
+
+        // 2. Estocada frontal brusca (Thrust / Jab)
+        float pathLen = getPathLength(_rawPoints, _rawCount);
+        if (_maxThrustG > 2.4f && pathLen < 25.0f) {
             res.type = GESTURE_THRUST;
             res.confidence = 92.0f;
             res.name = "ESTOCADA";
-            res.action = "CONFIRMAR / SELECIONAR";
-            res.symbol = "->";
-            res.color = 0xFFFF; // UI_TEXT
+            res.action = "TV OK / SELECIONAR";
+            res.symbol = "[OK]";
+            res.color = 0xFFFF;
             return res;
         }
 
-        // 2. Resample para N_POINTS
-        resample(_rawPoints, _rawCount, _normPoints, N_POINTS);
-
-        // 3. Métricas da trajetória
-        float totalLength = getPathLength(_normPoints, N_POINTS);
-        if (totalLength < 0.005f) {
-            res.action = "Sem movimento suficiente";
+        if (pathLen < 12.0f) {
+            res.action = "Movimento muito pequeno";
             return res;
         }
 
-        float dx = _normPoints[N_POINTS - 1].x - _normPoints[0].x;
-        float dy = _normPoints[N_POINTS - 1].y - _normPoints[0].y;
-        float straightDistance = sqrtf(dx * dx + dy * dy);
-        float closureRatio = straightDistance / totalLength; // Perto de 1 = linha reta; Perto de 0 = curva fechada/círculo
+        float dx = _rawPoints[_rawCount - 1].x - _rawPoints[0].x;
+        float dy = _rawPoints[_rawCount - 1].y - _rawPoints[0].y;
+        float straightDist = sqrtf(dx * dx + dy * dy);
+        float closureRatio = straightDist / pathLen;
 
-        // 4. Detecção de Swipes rápidos (linhas retas direcionais)
-        if (closureRatio > 0.82f) {
-            if (fabsf(dx) > fabsf(dy) * 1.5f) {
-                if (dx > 0) {
+        // 3. Swipes Rápidos (Linhas retas direcionais)
+        if (closureRatio > 0.72f && pathLen > 16.0f) {
+            if (fabsf(dx) > fabsf(dy) * 1.35f) {
+                if (dx > 0.0f) {
                     res.type = GESTURE_SWIPE_RIGHT;
-                    res.confidence = 94.0f;
+                    res.confidence = 95.0f;
                     res.name = "SWIPE DIREITA";
-                    res.action = "TV CANAL +";
+                    res.action = "CANAL +";
                     res.symbol = ">>";
-                    res.color = 0x5F37; // Verde agua
+                    res.color = 0x067F; // Electric cyan
                     return res;
                 } else {
                     res.type = GESTURE_SWIPE_LEFT;
-                    res.confidence = 94.0f;
+                    res.confidence = 95.0f;
                     res.name = "SWIPE ESQUERDA";
-                    res.action = "TV CANAL -";
+                    res.action = "CANAL -";
                     res.symbol = "<<";
-                    res.color = 0x5F37;
+                    res.color = 0x067F;
                     return res;
                 }
-            } else if (fabsf(dy) > fabsf(dx) * 1.5f) {
-                if (dy < 0) { // Na tela Y cresce para baixo, dy negativo = cima
+            } else if (fabsf(dy) > fabsf(dx) * 1.35f) {
+                if (dy < 0.0f) { // dy negativo = movimento para cima
                     res.type = GESTURE_SWIPE_UP;
                     res.confidence = 95.0f;
                     res.name = "SWIPE CIMA";
-                    res.action = "VOLUME + / TEMP +";
+                    res.action = "VOLUME +";
                     res.symbol = "^";
-                    res.color = 0x5F37;
+                    res.color = 0x27E8;
                     return res;
                 } else {
                     res.type = GESTURE_SWIPE_DOWN;
                     res.confidence = 95.0f;
                     res.name = "SWIPE BAIXO";
-                    res.action = "VOLUME - / TEMP -";
+                    res.action = "VOLUME -";
                     res.symbol = "v";
-                    res.color = 0xF800; // UI_RED
+                    res.color = 0xF9C7;
                     return res;
                 }
             }
         }
 
-        // 5. Normaliza escala e centroide para $1 Recognizer
-        scaleTo(_normPoints, N_POINTS, 100.0f);
-        translateToOrigin(_normPoints, N_POINTS);
+        // 4. Métricas Geométricas Invariantes (Bounding Box e Winding Angle)
+        float minX = _rawPoints[0].x, maxX = _rawPoints[0].x;
+        float minY = _rawPoints[0].y, maxY = _rawPoints[0].y;
+        for (int i = 1; i < _rawCount; ++i) {
+            if (_rawPoints[i].x < minX) minX = _rawPoints[i].x;
+            if (_rawPoints[i].x > maxX) maxX = _rawPoints[i].x;
+            if (_rawPoints[i].y < minY) minY = _rawPoints[i].y;
+            if (_rawPoints[i].y > maxY) maxY = _rawPoints[i].y;
+        }
+        float bbW = maxX - minX;
+        float bbH = maxY - minY;
+        if (bbW < 0.1f) bbW = 0.1f;
+        if (bbH < 0.1f) bbH = 0.1f;
+        float aspect = bbW / bbH;
 
-        // 6. Compara com os templates canônicos
-        float bestDist = 999999.0f;
-        GestureType bestType = GESTURE_NONE;
+        // Soma acumulada dos ângulos tangenciais (Winding Turns)
+        float headingTurns = 0.0f;
+        float prevHeading = 0.0f;
+        bool hasPrevHeading = false;
+        int step = (_rawCount > 40) ? 2 : 1;
 
-        // Template Círculo (horário e anti-horário)
-        float dCircleCW = matchTemplate(_normPoints, getCircleTemplate(true));
-        float dCircleCCW = matchTemplate(_normPoints, getCircleTemplate(false));
-        float dCircle = std::min(dCircleCW, dCircleCCW);
-        if (closureRatio < 0.45f && dCircle < bestDist) {
-            bestDist = dCircle;
-            bestType = GESTURE_CIRCLE;
+        for (int i = step; i < _rawCount; i += step) {
+            float segDx = _rawPoints[i].x - _rawPoints[i - step].x;
+            float segDy = _rawPoints[i].y - _rawPoints[i - step].y;
+            float segDist = sqrtf(segDx * segDx + segDy * segDy);
+            if (segDist > 0.4f) {
+                float hAng = atan2f(segDy, segDx);
+                if (hasPrevHeading) {
+                    float dAng = hAng - prevHeading;
+                    while (dAng > (float)M_PI) dAng -= 2.0f * (float)M_PI;
+                    while (dAng < -(float)M_PI) dAng += 2.0f * (float)M_PI;
+                    headingTurns += dAng;
+                }
+                prevHeading = hAng;
+                hasPrevHeading = true;
+            }
+        }
+        float absTurnDeg = fabsf(headingTurns) * 180.0f / (float)M_PI;
+
+        // 5. Reconhecimento de CÍRCULO (Invariante a ponto de partida e sentido)
+        // Traço fechado, proporção aproximada de 1:1, giro de 360° (+- 80°)
+        if (closureRatio < 0.48f && aspect > 0.40f && aspect < 2.4f && absTurnDeg > 250.0f && absTurnDeg < 540.0f) {
+            res.type = GESTURE_CIRCLE;
+            res.confidence = 94.0f;
+            res.name = "CIRCULO";
+            res.action = "TV LIGAR / DESLIGAR";
+            res.symbol = "( O )";
+            res.color = 0xFDE0; // Ouro Cyber
+            return res;
         }
 
-        // Template Letra V (Check)
-        float dV = matchTemplate(_normPoints, getVTemplate());
-        if (dV < bestDist) {
-            bestDist = dV;
-            bestType = GESTURE_CHECK_V;
+        // 6. Reconhecimento de LETRA V (Checkmark)
+        // Começa descendo (dy > 0), atinge vértice inferior no terço central e sobe (dy < 0)
+        int n = _rawCount;
+        float firstHalfDy = _rawPoints[n / 3].y - _rawPoints[0].y;
+        float lastHalfDy = _rawPoints[n - 1].y - _rawPoints[2 * n / 3].y;
+        int minYIdx = 0;
+        for (int i = 1; i < n; ++i) {
+            if (_rawPoints[i].y > _rawPoints[minYIdx].y) minYIdx = i; // y cresce para baixo
+        }
+        if (firstHalfDy > 4.0f && lastHalfDy < -4.0f && minYIdx >= n / 4 && minYIdx <= (3 * n) / 4) {
+            res.type = GESTURE_CHECK_V;
+            res.confidence = 91.0f;
+            res.name = "LETRA V";
+            res.action = "TV MUTE / DESMUDO";
+            res.symbol = "[ V ]";
+            res.color = 0x27E8; // Cyber mint
+            return res;
         }
 
-        // Template Letra Z (Raio)
-        float dZ = matchTemplate(_normPoints, getZTemplate());
-        if (dZ < bestDist) {
-            bestDist = dZ;
-            bestType = GESTURE_ZIGZAG;
+        // 7. Reconhecimento de LETRA Z (Zigzag / Raio)
+        // 3 segmentos: direita -> descida inclinada esquerda -> direita
+        float s1_dx = _rawPoints[n / 3].x - _rawPoints[0].x;
+        float s2_dx = _rawPoints[2 * n / 3].x - _rawPoints[n / 3].x;
+        float s3_dx = _rawPoints[n - 1].x - _rawPoints[2 * n / 3].x;
+        if (s1_dx > 4.0f && s2_dx < -4.0f && s3_dx > 4.0f && dy > 6.0f) {
+            res.type = GESTURE_ZIGZAG;
+            res.confidence = 92.0f;
+            res.name = "LETRA Z (RAIO)";
+            res.action = "AR LIGAR / DESLIGAR";
+            res.symbol = "[ Z ]";
+            res.color = 0x067F; // Electric cyan
+            return res;
         }
 
-        // Template Triângulo
-        float dTri = matchTemplate(_normPoints, getTriangleTemplate());
-        if (closureRatio < 0.50f && dTri < bestDist) {
-            bestDist = dTri;
-            bestType = GESTURE_TRIANGLE;
+        // 8. Reconhecimento de TRIÂNGULO
+        if (closureRatio < 0.48f && absTurnDeg > 220.0f && absTurnDeg < 480.0f) {
+            res.type = GESTURE_TRIANGLE;
+            res.confidence = 86.0f;
+            res.name = "TRIANGULO";
+            res.action = "AR MODO TURBO";
+            res.symbol = "[ /\\ ]";
+            res.color = 0xFD20; // Laranja neon
+            return res;
         }
 
-        // Converte distância em pontuação de confiança (0 a 100%)
-        // Diagonal de uma caixa de 100x100 = ~141.4. Meia diagonal = ~70.7
-        float maxD = 70.7f;
-        float score = (1.0f - (bestDist / maxD)) * 100.0f;
-        if (score < 0.0f) score = 0.0f;
-        if (score > 100.0f) score = 100.0f;
-
-        if (score >= 68.0f && bestType != GESTURE_NONE) {
-            res.type = bestType;
-            res.confidence = score;
-            fillMetadata(res);
-        } else {
-            res.type = GESTURE_NONE;
-            res.confidence = score;
-            res.name = "NAO RECONHECIDO";
-            res.action = "Desenhe novamente";
-            res.symbol = "?";
-            res.color = 0x9CD3;
-        }
-
+        // Não reconhecido
+        res.type = GESTURE_NONE;
+        res.confidence = 25.0f;
+        res.name = "INCERTO";
+        res.action = "Faça Circulo, V, Z ou Swipe";
+        res.symbol = "[ ? ]";
+        res.color = 0x8CD1;
         return res;
     }
 
 private:
     GesturePoint _rawPoints[MAX_RAW_POINTS];
-    GesturePoint _normPoints[N_POINTS];
     int _rawCount;
     bool _recording;
     uint32_t _lastSampleMs;
     float _accumX;
     float _accumY;
+    float _accumRoll;
     float _maxThrustG;
+    float _biasGx;
+    float _biasGz;
 
     static float distance(const GesturePoint& a, const GesturePoint& b) {
         float dx = b.x - a.x;
@@ -263,195 +358,6 @@ private:
         }
         return len;
     }
-
-    static void resample(const GesturePoint* src, int srcCount, GesturePoint* dst, int n) {
-        float I = getPathLength(src, srcCount) / (n - 1);
-        if (I <= 0.0f) {
-            for (int i = 0; i < n; ++i) dst[i] = src[0];
-            return;
-        }
-
-        dst[0] = src[0];
-        int dstIndex = 1;
-        float D = 0.0f;
-
-        GesturePoint current = src[0];
-        for (int i = 1; i < srcCount && dstIndex < n; ++i) {
-            float d = distance(current, src[i]);
-            if ((D + d) >= I) {
-                float qx = current.x + ((I - D) / d) * (src[i].x - current.x);
-                float qy = current.y + ((I - D) / d) * (src[i].y - current.y);
-                GesturePoint q = { qx, qy };
-                dst[dstIndex++] = q;
-                current = q;
-                D = 0.0f;
-                --i; // Reavalia a partir do novo ponto intermediário
-            } else {
-                D += d;
-                current = src[i];
-            }
-        }
-
-        while (dstIndex < n) {
-            dst[dstIndex++] = src[srcCount - 1];
-        }
-    }
-
-    static void scaleTo(GesturePoint* pts, int n, float size) {
-        float minX = pts[0].x, maxX = pts[0].x;
-        float minY = pts[0].y, maxY = pts[0].y;
-        for (int i = 1; i < n; ++i) {
-            if (pts[i].x < minX) minX = pts[i].x;
-            if (pts[i].x > maxX) maxX = pts[i].x;
-            if (pts[i].y < minY) minY = pts[i].y;
-            if (pts[i].y > maxY) maxY = pts[i].y;
-        }
-        float w = maxX - minX;
-        float h = maxY - minY;
-        if (w < 0.001f) w = 1.0f;
-        if (h < 0.001f) h = 1.0f;
-        float maxDim = (w > h) ? w : h;
-        for (int i = 0; i < n; ++i) {
-            pts[i].x *= (size / maxDim);
-            pts[i].y *= (size / maxDim);
-        }
-    }
-
-    static void translateToOrigin(GesturePoint* pts, int n) {
-        float sumX = 0.0f, sumY = 0.0f;
-        for (int i = 0; i < n; ++i) {
-            sumX += pts[i].x;
-            sumY += pts[i].y;
-        }
-        float cx = sumX / n;
-        float cy = sumY / n;
-        for (int i = 0; i < n; ++i) {
-            pts[i].x -= cx;
-            pts[i].y -= cy;
-        }
-    }
-
-    static float matchTemplate(const GesturePoint* candidate, const GesturePoint* tmpl) {
-        float totalDist = 0.0f;
-        for (int i = 0; i < N_POINTS; ++i) {
-            totalDist += distance(candidate[i], tmpl[i]);
-        }
-        return totalDist / N_POINTS;
-    }
-
-    // ============================================================
-    // TEMPLATES CANÔNICOS PRE-CALCULADOS (32 pontos cada)
-    // ============================================================
-    static const GesturePoint* getCircleTemplate(bool cw) {
-        static GesturePoint circleCW[N_POINTS];
-        static GesturePoint circleCCW[N_POINTS];
-        static bool init = false;
-        if (!init) {
-            for (int i = 0; i < N_POINTS; ++i) {
-                float thetaCW = (2.0f * M_PI * i) / (N_POINTS - 1);
-                float thetaCCW = -thetaCW;
-                circleCW[i].x = cosf(thetaCW) * 50.0f;
-                circleCW[i].y = sinf(thetaCW) * 50.0f;
-                circleCCW[i].x = cosf(thetaCCW) * 50.0f;
-                circleCCW[i].y = sinf(thetaCCW) * 50.0f;
-            }
-            init = true;
-        }
-        return cw ? circleCW : circleCCW;
-    }
-
-    static const GesturePoint* getVTemplate() {
-        static GesturePoint vTmpl[N_POINTS];
-        static bool init = false;
-        if (!init) {
-            int half = N_POINTS / 2;
-            for (int i = 0; i < half; ++i) {
-                vTmpl[i].x = (float)i * (50.0f / half) - 25.0f;
-                vTmpl[i].y = (float)i * (100.0f / half) - 50.0f;
-            }
-            for (int i = half; i < N_POINTS; ++i) {
-                vTmpl[i].x = 25.0f + (float)(i - half) * (50.0f / (N_POINTS - half)) - 25.0f;
-                vTmpl[i].y = 50.0f - (float)(i - half) * (100.0f / (N_POINTS - half));
-            }
-            init = true;
-        }
-        return vTmpl;
-    }
-
-    static const GesturePoint* getZTemplate() {
-        static GesturePoint zTmpl[N_POINTS];
-        static bool init = false;
-        if (!init) {
-            int s1 = N_POINTS / 3;
-            int s2 = 2 * N_POINTS / 3;
-            for (int i = 0; i < s1; ++i) {
-                zTmpl[i].x = ((float)i * (100.0f / s1)) - 50.0f;
-                zTmpl[i].y = -50.0f;
-            }
-            for (int i = s1; i < s2; ++i) {
-                zTmpl[i].x = (50.0f - (float)(i - s1) * (100.0f / (s2 - s1)));
-                zTmpl[i].y = (-50.0f + (float)(i - s1) * (100.0f / (s2 - s1)));
-            }
-            for (int i = s2; i < N_POINTS; ++i) {
-                zTmpl[i].x = (-50.0f + (float)(i - s2) * (100.0f / (N_POINTS - s2)));
-                zTmpl[i].y = 50.0f;
-            }
-            init = true;
-        }
-        return zTmpl;
-    }
-
-    static const GesturePoint* getTriangleTemplate() {
-        static GesturePoint triTmpl[N_POINTS];
-        static bool init = false;
-        if (!init) {
-            int s1 = N_POINTS / 3;
-            int s2 = 2 * N_POINTS / 3;
-            for (int i = 0; i < s1; ++i) { // Sobe para o pico
-                triTmpl[i].x = ((float)i * (50.0f / s1)) - 25.0f;
-                triTmpl[i].y = 50.0f - ((float)i * (100.0f / s1));
-            }
-            for (int i = s1; i < s2; ++i) { // Desce para a direita
-                triTmpl[i].x = 25.0f + ((float)(i - s1) * (50.0f / (s2 - s1))) - 25.0f;
-                triTmpl[i].y = -50.0f + ((float)(i - s1) * (100.0f / (s2 - s1)));
-            }
-            for (int i = s2; i < N_POINTS; ++i) { // Base para a esquerda
-                triTmpl[i].x = 50.0f - ((float)(i - s2) * (100.0f / (N_POINTS - s2)));
-                triTmpl[i].y = 50.0f;
-            }
-            init = true;
-        }
-        return triTmpl;
-    }
-
-    static void fillMetadata(GestureResult& res) {
-        switch (res.type) {
-            case GESTURE_CIRCLE:
-                res.name = "CIRCULO";
-                res.action = "TV POWER DISPARADO";
-                res.symbol = "O";
-                res.color = 0xF68D; // UI_YELLOW
-                break;
-            case GESTURE_CHECK_V:
-                res.name = "LETRA V";
-                res.action = "TV MUTE / DESMUDO";
-                res.symbol = "V";
-                res.color = 0x5F37; // UI_GREEN
-                break;
-            case GESTURE_ZIGZAG:
-                res.name = "LETRA Z (RAIO)";
-                res.action = "AR-CONDICIONADO POWER";
-                res.symbol = "Z";
-                res.color = 0x05BF; // Ciano vibrante
-                break;
-            case GESTURE_TRIANGLE:
-                res.name = "TRIANGULO";
-                res.action = "MODO TURBO AR";
-                res.symbol = "/\\";
-                res.color = 0xFD20; // UI_ORANGE
-                break;
-            default:
-                break;
-        }
-    }
 };
+
+#endif // GESTURE_AI_H
