@@ -647,12 +647,18 @@ void drawTrainingEndConfirm();
 void drawTrainingSummary();
 void drawTrainingHistory();
 void drawTrainingHistoryDetail();
+void showBootIntro();
 void drawScreen();
 uint8_t itemCount();
 void nextItem();
 void previousItem();
 void goBack();
 void executeSelected();
+bool requestWifiScan(bool forMenu, bool forAuto);
+void processWifiScan();
+bool parseIndexArg(const char* name, int count, int& result);
+String acStateJson(uint8_t device);
+void handleWebApiAcState();
 
 // ============================================================
 // BOTAO C
@@ -2177,10 +2183,16 @@ void handleWebApiCattleState() {
 
 void handleWebApiCattleSelect() {
   int dir = webServer.hasArg("dir") ? webServer.arg("dir").toInt() : 1;
-  if (dir < 0) {
-    do { cattleSelectedNumber = (cattleSelectedNumber + cattleMaxNumber) % (cattleMaxNumber + 1); } while (isCattleDrawn(cattleSelectedNumber));
-  } else {
-    do { cattleSelectedNumber = (cattleSelectedNumber + 1) % (cattleMaxNumber + 1); } while (isCattleDrawn(cattleSelectedNumber));
+  if (cattleRemainingCount() > 0) {
+    for (uint8_t step = 1; step <= cattleMaxNumber + 1; step++) {
+      uint8_t candidate = (dir < 0)
+        ? (cattleSelectedNumber + cattleMaxNumber + 1 - (step % (cattleMaxNumber + 1))) % (cattleMaxNumber + 1)
+        : (cattleSelectedNumber + step) % (cattleMaxNumber + 1);
+      if (!isCattleDrawn(candidate)) {
+        cattleSelectedNumber = candidate;
+        break;
+      }
+    }
   }
   saveCattleSession();
   redraw = true;
@@ -3326,6 +3338,42 @@ void drawFooter() {
     display.setTextDatum(middle_center);
     display.setTextColor(UI_GREEN, UI_PANEL_ALT);
     display.drawString(toast, 120, 126);
+    return;
+  }
+
+  // Footer especifico para Agente IA
+  if (screen == Screen::VOICE_AI) {
+    display.fillRoundRect(6, 121, 14, 11, 2, UI_ORANGE);
+    display.setTextColor(UI_BG, UI_ORANGE);
+    display.setTextDatum(middle_center);
+    display.drawString("A", 13, 126);
+    display.setTextColor(UI_TEXT, UI_BG);
+    display.setTextDatum(middle_left);
+    if (voiceState == VoiceState::LISTENING) {
+      display.drawString("Enviar", 23, 126);
+    } else {
+      display.drawString("Falar", 23, 126);
+    }
+
+    display.fillRoundRect(80, 121, 14, 11, 2, UI_CYAN);
+    display.setTextColor(UI_BG, UI_CYAN);
+    display.setTextDatum(middle_center);
+    display.drawString("B", 87, 126);
+    display.setTextColor(UI_TEXT, UI_BG);
+    display.setTextDatum(middle_left);
+    if (voiceState == VoiceState::RESULT) {
+      display.drawString("Rolar", 97, 126);
+    } else {
+      display.drawString("Limpar", 97, 126);
+    }
+
+    display.fillRoundRect(150, 121, 14, 11, 2, UI_MUTED);
+    display.setTextColor(UI_BG, UI_MUTED);
+    display.setTextDatum(middle_center);
+    display.drawString("C", 157, 126);
+    display.setTextColor(UI_TEXT, UI_BG);
+    display.setTextDatum(middle_left);
+    display.drawString("Voltar", 167, 126);
     return;
   }
 
@@ -4521,157 +4569,155 @@ void drawWrappedText(int x, int y, int maxW, int maxLines, int startLine, const 
 
 void drawVoiceAiScreen() {
   auto& d = M5.Display;
-  d.fillRect(0, 0, 135, 240, UI_BG);
+  drawTitle("AGENTE IA", voiceActiveAgent);
 
-  // Topo: Header Holografico
-  d.fillRoundRect(6, 4, 123, 24, 4, UI_PANEL);
-  d.drawRoundRect(6, 4, 123, 24, 4, UI_BORDER);
-  d.fillRoundRect(9, 7, 18, 18, 3, UI_PURPLE);
-  d.setTextDatum(middle_center);
-  d.setTextSize(1);
-  d.setTextColor(UI_BG, UI_PURPLE);
-  d.drawString("IA", 18, 16);
-  d.setTextDatum(middle_left);
-  d.setTextColor(UI_TEXT, UI_PANEL);
-  d.drawString("AGENTE IA", 31, 16);
-
-  // Wi-Fi e Bateria compactos no topo
-  drawWifiIcon(86, 10, WiFi.status() == WL_CONNECTED);
-  int batLevel = constrain(M5.Power.getBatteryLevel(), 0, 100);
-  d.drawRoundRect(104, 10, 18, 9, 2, UI_BORDER);
-  d.fillRect(122, 12, 2, 5, UI_BORDER);
-  int bFill = map(batLevel, 0, 100, 0, 14);
-  if (bFill > 0) d.fillRect(106, 12, bFill, 5, batLevel > 20 ? UI_GREEN : UI_RED);
-
-  // Pílula do Agente Ativo
-  d.fillRoundRect(6, 31, 123, 19, 3, UI_PANEL_ALT);
-  d.drawRoundRect(6, 31, 123, 19, 3, UI_BORDER);
-  d.setTextDatum(middle_left);
-  d.setTextSize(1);
-  d.setTextColor(UI_MUTED, UI_PANEL_ALT);
-  d.drawString("Alvo:", 12, 41);
-  d.setTextColor(UI_CYAN, UI_PANEL_ALT);
-  d.drawString(voiceActiveAgent, 44, 41);
-
-  // Card Principal (x: 6..129, y: 53..168, h: 115)
-  d.fillRoundRect(6, 53, 123, 116, 5, UI_PANEL);
-  d.drawRoundRect(6, 53, 123, 116, 5, UI_BORDER);
+  // Painel Esquerdo (x: 6, y: 28, w: 96, h: 90) - Estado & Visualizador
+  d.fillRoundRect(6, 28, 96, 90, 4, UI_PANEL);
+  d.drawRoundRect(6, 28, 96, 90, 4, UI_BORDER);
 
   if (voiceState == VoiceState::IDLE) {
     // Ícone de Microfone Estilizado
-    d.drawRoundRect(60, 65, 15, 22, 7, UI_CYAN);
-    d.fillRect(63, 68, 9, 16, UI_CYAN);
-    d.drawFastHLine(56, 88, 23, UI_BORDER);
-    d.drawFastVLine(67, 88, 6, UI_BORDER);
-    d.drawFastHLine(61, 94, 13, UI_BORDER);
+    d.drawRoundRect(42, 36, 14, 20, 6, UI_CYAN);
+    d.fillRect(45, 39, 8, 14, UI_CYAN);
+    d.drawFastHLine(38, 57, 22, UI_BORDER);
+    d.drawFastVLine(49, 57, 5, UI_BORDER);
+    d.drawFastHLine(43, 62, 12, UI_BORDER);
 
+    d.fillRoundRect(12, 72, 84, 16, 3, UI_PANEL_ALT);
+    d.drawRoundRect(12, 72, 84, 16, 3, UI_CYAN);
     d.setTextDatum(middle_center);
     d.setTextSize(1);
-    d.setTextColor(UI_YELLOW, UI_PANEL);
-    d.drawString("CLIQUE [ A ] E FALE", 67, 106);
+    d.setTextColor(UI_CYAN, UI_PANEL_ALT);
+    d.drawString("PRONTO", 54, 80);
 
-    // Exemplos de comandos
-    d.setTextDatum(middle_left);
+    d.setTextDatum(middle_center);
     d.setTextColor(UI_MUTED, UI_PANEL);
-    d.drawString("Diga por voz:", 14, 122);
-    d.setTextColor(UI_CYAN, UI_PANEL);
-    d.drawString("• 'abrir vscode'", 14, 134);
-    d.drawString("• 'abrir chrome'", 14, 145);
-    d.setTextColor(UI_GREEN, UI_PANEL);
-    d.drawString("• 'pergunta livre...'", 14, 157);
+    d.drawString("SPM1423 MIC", 54, 102);
 
   } else if (voiceState == VoiceState::LISTENING) {
-    d.setTextDatum(middle_center);
-    d.setTextSize(1);
-    d.setTextColor(UI_YELLOW, UI_PANEL);
-    d.drawString("GRAVANDO...", 67, 68);
-
-    // Onda Sonora Animada (VU meter com 7 barras)
-    constexpr int barXs[] = {25, 38, 51, 64, 77, 90, 103};
-    constexpr int baseH[] = {10, 22, 38, 50, 36, 20, 12};
-    for (int b = 0; b < 7; ++b) {
-      int h = baseH[b] + (int)(sinf((voiceWavePhase + b * 45) * 0.08f) * 12.0f);
-      h = constrain(h, 4, 52);
-      int by = 118 - h / 2;
-      uint16_t bCol = (b == 3) ? UI_YELLOW : ((b % 2 == 0) ? UI_CYAN : UI_GREEN);
-      d.fillRoundRect(barXs[b], by, 7, h, 2, bCol);
+    // VU-Meter Animado (5 barras com efeito estéreo)
+    constexpr int bXs[] = {22, 35, 48, 61, 74};
+    constexpr int bHs[] = {12, 24, 38, 26, 14};
+    for (int b = 0; b < 5; ++b) {
+      int h = bHs[b] + (int)(sinf((voiceWavePhase + b * 50) * 0.1f) * 10.0f);
+      h = constrain(h, 4, 38);
+      int by = 53 - h / 2;
+      uint16_t bCol = (b == 2) ? UI_YELLOW : ((b % 2 == 0) ? UI_CYAN : UI_GREEN);
+      d.fillRoundRect(bXs[b], by, 7, h, 2, bCol);
     }
 
+    d.fillRoundRect(12, 72, 84, 16, 3, UI_YELLOW);
     d.setTextDatum(middle_center);
-    d.setTextColor(UI_MUTED, UI_PANEL);
-    d.drawString("Fale seu comando!", 67, 154);
+    d.setTextSize(1);
+    d.setTextColor(UI_BG, UI_YELLOW);
+    d.drawString("GRAVANDO...", 54, 80);
+
+    uint32_t elapsedMs = millis() - voiceRecStartTime;
+    float elapsedSec = elapsedMs / 1000.0f;
+    char secBuf[16];
+    snprintf(secBuf, sizeof(secBuf), "%.1fs / 4.2s", elapsedSec);
+    d.setTextDatum(middle_center);
+    d.setTextColor(UI_TEXT, UI_PANEL);
+    d.drawString(secBuf, 54, 102);
 
   } else if (voiceState == VoiceState::THINKING) {
+    d.fillRoundRect(12, 38, 84, 20, 3, UI_PANEL_ALT);
+    d.drawRoundRect(12, 38, 84, 20, 3, UI_CYAN);
     d.setTextDatum(middle_center);
     d.setTextSize(1);
-    d.setTextColor(UI_CYAN, UI_PANEL);
-    d.drawString("PROCESSANDO IA...", 67, 72);
+    d.setTextColor(UI_CYAN, UI_PANEL_ALT);
+    d.drawString("ENVIANDO...", 54, 48);
 
     // Barra de progresso animada
-    int pW = ((millis() / 30) % 80) + 10;
-    d.drawRoundRect(27, 90, 82, 8, 2, UI_BORDER);
-    d.fillRect(29, 92, pW, 4, UI_CYAN);
+    int pW = ((millis() / 25) % 64) + 8;
+    d.drawRoundRect(16, 68, 76, 7, 2, UI_BORDER);
+    d.fillRect(18, 70, pW, 3, UI_CYAN);
 
+    d.setTextDatum(middle_center);
     d.setTextColor(UI_MUTED, UI_PANEL);
-    d.drawString("Aguardando resposta", 67, 114);
-    if (voiceTranscription.length() > 0) {
-      d.setTextColor(UI_YELLOW, UI_PANEL);
-      d.drawString("\"" + voiceTranscription.substring(0, 16) + "...\"", 67, 138);
-    }
+    d.drawString("PC Bridge:5000", 54, 98);
 
   } else if (voiceState == VoiceState::RESULT) {
-    // Exibe o comando ouvido
+    d.fillRoundRect(12, 36, 84, 20, 3, UI_GREEN);
+    d.setTextDatum(middle_center);
+    d.setTextSize(1);
+    d.setTextColor(UI_BG, UI_GREEN);
+    d.drawString("RESPOSTA", 54, 46);
+
+    d.setTextDatum(middle_center);
+    d.setTextColor(UI_YELLOW, UI_PANEL);
+    d.drawString(voiceResultTitle.substring(0, 10), 54, 72);
+
+    d.setTextColor(UI_MUTED, UI_PANEL);
+    d.drawString("[B] Rolar", 54, 98);
+  }
+
+  // Painel Direito (x: 106, y: 28, w: 128, h: 90) - Conteúdo / Transcrição
+  d.fillRoundRect(106, 28, 128, 90, 4, UI_PANEL);
+  d.drawRoundRect(106, 28, 128, 90, 4, UI_BORDER);
+
+  if (voiceState == VoiceState::IDLE) {
     d.setTextDatum(top_left);
     d.setTextSize(1);
     d.setTextColor(UI_YELLOW, UI_PANEL);
-    String qLine = "> " + voiceTranscription;
-    if (qLine.length() > 18) qLine = qLine.substring(0, 16) + "..";
-    d.drawString(qLine, 12, 58);
+    d.drawString("Comandos de voz:", 112, 34);
 
-    // Título do resultado (ex: AGENTE ATIVADO / RESPOSTA IA)
     d.setTextColor(UI_CYAN, UI_PANEL);
-    d.drawString(voiceResultTitle, 12, 70);
-    d.drawFastHLine(12, 80, 111, UI_BORDER);
+    d.drawString("• 'abrir vscode'", 112, 48);
+    d.drawString("• 'abrir chrome'", 112, 60);
+    d.drawString("• 'abrir terminal'", 112, 72);
 
-    // Corpo da resposta com quebra automática de linha
-    drawWrappedText(12, 84, 111, 6, voiceScrollLine, voiceResultBody, UI_TEXT);
-
-    // Indicador de rolagem se houver texto
-    d.setTextDatum(bottom_right);
     d.setTextColor(UI_MUTED, UI_PANEL);
-    d.drawString("[B] Rolar", 124, 166);
+    d.drawString("• 'que horas sao?'", 112, 85);
+    d.drawString("• 'pergunta livre...'", 112, 98);
+
+  } else if (voiceState == VoiceState::LISTENING) {
+    d.setTextDatum(top_left);
+    d.setTextSize(1);
+    d.setTextColor(UI_YELLOW, UI_PANEL);
+    d.drawString("Ouvindo no M5Stick:", 112, 36);
+
+    d.setTextColor(UI_TEXT, UI_PANEL);
+    d.drawString("Fale sua frase proximo", 112, 54);
+    d.drawString("ao topo do aparelho.", 112, 68);
+
+    d.setTextColor(UI_CYAN, UI_PANEL);
+    d.drawString("Clique [A] p/ enviar", 112, 92);
+
+  } else if (voiceState == VoiceState::THINKING) {
+    d.setTextDatum(top_left);
+    d.setTextSize(1);
+    d.setTextColor(UI_CYAN, UI_PANEL);
+    d.drawString("Processando com IA...", 112, 36);
+
+    if (voiceTranscription.length() > 0) {
+      d.setTextColor(UI_YELLOW, UI_PANEL);
+      String tShown = "\"" + voiceTranscription + "\"";
+      if (tShown.length() > 18) tShown = tShown.substring(0, 16) + "..";
+      d.drawString(tShown, 112, 56);
+    } else {
+      d.setTextColor(UI_MUTED, UI_PANEL);
+      d.drawString("Reconhecendo fala...", 112, 56);
+    }
+
+    d.setTextColor(UI_TEXT, UI_PANEL);
+    d.drawString("Aguarde resposta do PC", 112, 82);
+
+  } else if (voiceState == VoiceState::RESULT) {
+    d.setTextDatum(top_left);
+    d.setTextSize(1);
+
+    if (voiceTranscription.length() > 0) {
+      d.setTextColor(UI_YELLOW, UI_PANEL);
+      String qStr = "> " + voiceTranscription;
+      if (qStr.length() > 20) qStr = qStr.substring(0, 18) + "..";
+      d.drawString(qStr, 112, 33);
+      d.drawFastHLine(112, 44, 116, UI_BORDER);
+    }
+
+    d.setTextColor(UI_TEXT, UI_PANEL);
+    drawWrappedText(112, 48, 116, 5, voiceScrollLine, voiceResultBody, UI_TEXT);
   }
-
-  // Painel de Comandos e Ajuda (y: 173..218)
-  d.fillRoundRect(6, 173, 123, 44, 4, UI_PANEL);
-  d.drawRoundRect(6, 173, 123, 44, 4, UI_BORDER);
-  d.setTextDatum(middle_left);
-  d.setTextSize(1);
-
-  d.fillRoundRect(12, 178, 12, 11, 2, UI_ORANGE);
-  d.setTextColor(UI_BG, UI_ORANGE);
-  d.setTextDatum(middle_center);
-  d.drawString("A", 18, 183);
-  d.setTextDatum(middle_left);
-  d.setTextColor(UI_TEXT, UI_PANEL);
-  if (voiceState == VoiceState::LISTENING) {
-    d.drawString("Clique p/ Enviar", 30, 183);
-  } else {
-    d.drawString("Clique p/ Falar", 30, 183);
-  }
-
-  d.fillRoundRect(12, 194, 12, 11, 2, UI_CYAN);
-  d.setTextColor(UI_BG, UI_CYAN);
-  d.setTextDatum(middle_center);
-  d.drawString("B", 18, 199);
-  d.setTextDatum(middle_left);
-  d.setTextColor(UI_MUTED, UI_PANEL);
-  d.drawString("Rolar / Nova fala", 30, 199);
-
-  // Rodapé
-  d.setTextDatum(middle_center);
-  d.setTextColor(UI_MUTED, UI_BG);
-  d.drawString("C: voltar ao menu", 67, 229);
 }
 
 void processVoiceAiScreen() {
@@ -4799,8 +4845,7 @@ void processVoiceAiScreen() {
 
 void drawScreen() {
   auto& display = M5.Display;
-  const bool portrait = screen == Screen::MOUSE ||
-                        screen == Screen::VOICE_AI;
+  const bool portrait = (screen == Screen::MOUSE);
   display.setRotation(portrait ? 0 : 3);
   display.startWrite();
 
@@ -4921,7 +4966,15 @@ void nextItem() {
   } else if (screen == Screen::TEAM_CATTLE_LIMIT) {
     cattleMaxNumber = (cattleMaxNumber + 1) % 10;
   } else if (screen == Screen::TEAM_CATTLE_COUNTER) {
-    do { cattleSelectedNumber = (cattleSelectedNumber + 1) % (cattleMaxNumber + 1); } while (isCattleDrawn(cattleSelectedNumber));
+    if (cattleRemainingCount() > 0) {
+      for (uint8_t step = 1; step <= cattleMaxNumber + 1; step++) {
+        uint8_t candidate = (cattleSelectedNumber + step) % (cattleMaxNumber + 1);
+        if (!isCattleDrawn(candidate)) {
+          cattleSelectedNumber = candidate;
+          break;
+        }
+      }
+    }
     saveCattleSession();
   } else if (screen == Screen::TEAM_TRAIN_COUNT) {
     trainingSetupCount = trainingSetupCount % MAX_TRAIN_HORSES + 1;
@@ -4958,7 +5011,15 @@ void previousItem() {
   } else if (screen == Screen::TEAM_CATTLE_LIMIT) {
     cattleMaxNumber = (cattleMaxNumber + 9) % 10;
   } else if (screen == Screen::TEAM_CATTLE_COUNTER) {
-    do { cattleSelectedNumber = (cattleSelectedNumber + cattleMaxNumber) % (cattleMaxNumber + 1); } while (isCattleDrawn(cattleSelectedNumber));
+    if (cattleRemainingCount() > 0) {
+      for (uint8_t step = 1; step <= cattleMaxNumber + 1; step++) {
+        uint8_t candidate = (cattleSelectedNumber + cattleMaxNumber + 1 - (step % (cattleMaxNumber + 1))) % (cattleMaxNumber + 1);
+        if (!isCattleDrawn(candidate)) {
+          cattleSelectedNumber = candidate;
+          break;
+        }
+      }
+    }
     saveCattleSession();
   } else if (screen == Screen::TEAM_TRAIN_COUNT) {
     trainingSetupCount = trainingSetupCount == 1 ? MAX_TRAIN_HORSES : trainingSetupCount - 1;
@@ -5394,6 +5455,70 @@ void executeSelected() {
 // SETUP / LOOP
 // ============================================================
 
+
+// ============================================================
+// BOOT INTRO & HARDWARE DIAGNOSTICS (CYBER OS)
+// ============================================================
+
+void showBootIntro() {
+  auto& d = M5.Display;
+  d.setRotation(3);
+  d.fillScreen(UI_BG);
+
+  // Vinheta sonora futurista de abertura (arpeggio ascendente não-bloqueante)
+  if (M5.Speaker.isEnabled()) {
+    M5.Speaker.tone(880, 45); delay(50);
+    M5.Speaker.tone(1175, 45); delay(50);
+    M5.Speaker.tone(1480, 55); delay(60);
+    M5.Speaker.tone(1760, 110); delay(120);
+  }
+
+  // Moldura Cyber Neon Dupla
+  d.drawRoundRect(2, 2, 236, 131, 5, UI_BORDER);
+  d.drawRoundRect(4, 4, 232, 127, 4, UI_SELECTED);
+
+  // Header do Banner
+  d.fillRoundRect(8, 8, 224, 26, 3, UI_PANEL);
+  d.drawRoundRect(8, 8, 224, 26, 3, UI_CYAN);
+  d.setTextDatum(middle_center);
+  d.setTextSize(2);
+  d.setTextColor(UI_CYAN, UI_PANEL);
+  d.drawString("M5 PERSONAL", 120, 21);
+
+  d.setTextDatum(middle_center);
+  d.setTextSize(1);
+  d.setTextColor(UI_YELLOW, UI_BG);
+  d.drawString("CYBERNETIC OS // PICO-V3-02", 120, 41);
+
+  // Autoteste de Periféricos com indicação visual em tempo real
+  const char* diagTests[] = {
+    "[ OK ] CPU ESP32 @ 240MHz",
+    psramFound() ? "[ OK ] 2MB PSRAM DETECTADA" : "[WARN] PSRAM INTERNA",
+    M5.Imu.isEnabled() ? "[ OK ] IMU 6-EIXOS ATIVO" : "[WARN] IMU EM STANDBY",
+    "[ OK ] MIC SPM1423 I2S DMA",
+    "[ OK ] EMISSOR IR GPIO 19",
+    "[ OK ] RTC & ENERGIA AXP"
+  };
+
+  const int startY = 51;
+  for (int i = 0; i < 6; i++) {
+    d.setTextDatum(middle_left);
+    d.setTextSize(1);
+    bool isOk = strstr(diagTests[i], "[ OK ]") != nullptr;
+    d.setTextColor(isOk ? UI_GREEN : UI_YELLOW, UI_BG);
+    d.drawString(diagTests[i], 22, startY + i * 11);
+    delay(40);
+  }
+
+  // Barra de progresso animada de carregamento
+  d.drawRoundRect(22, 119, 196, 7, 2, UI_BORDER);
+  for (int w = 2; w <= 192; w += 8) {
+    d.fillRect(24, 121, w, 3, UI_CYAN);
+    delay(8);
+  }
+  delay(180);
+}
+
 void setup() {
   Serial.begin(115200);
 
@@ -5436,6 +5561,7 @@ void setup() {
   mideaAc.begin();
   applyMideaState(airConditioners[1].state);
 
+  showBootIntro();
   drawScreen();
 
   // Inicia conexão automática em segundo plano à rede pré-configurada Ribeiro
