@@ -358,6 +358,8 @@ bool weatherLocationValid = false;
 bool weatherUpdatePending = false;
 
 bool isMenuScreen(Screen value);
+void drawWifiIcon(int x, int y, bool connected);
+void drawBatteryGauge(int x, int y, int battery, bool charging);
 void drawStatusBar();
 void updateStatusBarClock();
 void drawClockScreen(bool fullClear = true);
@@ -2798,42 +2800,76 @@ void processWeatherAndClock() {
   }
 }
 
-void drawStatusBar() {
+void drawWifiIcon(int x, int y, bool connected) {
   auto& d = M5.Display;
-  d.setTextSize(1);
+  uint16_t col = connected ? UI_GREEN : UI_MUTED;
 
-  // 1. Wi-Fi badge com indicador de status
-  d.setTextDatum(middle_left);
-  if (WiFi.status() == WL_CONNECTED) {
-    d.fillCircle(123, 13, 3, UI_GREEN);
-    d.setTextColor(UI_CYAN, UI_BG);
-    d.drawString("WF", 129, 13);
-  } else {
-    d.fillCircle(123, 13, 2, UI_MUTED);
-    d.setTextColor(UI_MUTED, UI_BG);
-    d.drawString("--", 129, 13);
+  // Ponto base
+  d.fillRect(x + 5, y + 9, 2, 2, col);
+
+  // Arco 1 (interno)
+  d.drawPixel(x + 2, y + 7, col);
+  d.drawPixel(x + 3, y + 6, col);
+  d.drawFastHLine(x + 4, y + 5, 4, col);
+  d.drawPixel(x + 8, y + 6, col);
+  d.drawPixel(x + 9, y + 7, col);
+
+  // Arco 2 (externo)
+  d.drawPixel(x + 0, y + 4, col);
+  d.drawPixel(x + 1, y + 3, col);
+  d.drawPixel(x + 2, y + 2, col);
+  d.drawFastHLine(x + 3, y + 1, 6, col);
+  d.drawPixel(x + 9, y + 2, col);
+  d.drawPixel(x + 10, y + 3, col);
+  d.drawPixel(x + 11, y + 4, col);
+
+  // Se desconectado, barra diagonal vermelha marcando corte/desconexao
+  if (!connected) {
+    d.drawLine(x + 0, y + 11, x + 11, y + 0, UI_RED);
+    d.drawLine(x + 1, y + 11, x + 12, y + 0, UI_RED);
+  }
+}
+
+void drawBatteryGauge(int x, int y, int battery, bool charging) {
+  auto& d = M5.Display;
+  uint16_t bColor = UI_GREEN;
+  if (charging) bColor = UI_CYAN;
+  else if (battery <= 20) bColor = UI_RED;
+  else if (battery <= 45) bColor = UI_YELLOW;
+
+  // Carcaca metalica da bateria com terminal
+  d.drawRoundRect(x, y, 20, 10, 2, UI_BORDER);
+  d.fillRect(x + 20, y + 2, 2, 6, UI_BORDER);
+
+  // Barra proporcional de nivel (0 a 100% -> 0 a 16px)
+  int fillW = map(constrain(battery, 0, 100), 0, 100, 0, 16);
+  if (fillW > 0) {
+    d.fillRect(x + 2, y + 2, fillW, 6, bColor);
   }
 
-  // 2. Bateria (Ícone moderno arredondado + valor)
-  int battery = constrain(M5.Power.getBatteryLevel(), 0, 100);
-  uint16_t bColor = UI_GREEN;
-  if (battery <= 20 && !M5.Power.isCharging()) bColor = UI_RED;
-  else if (battery <= 45 && !M5.Power.isCharging()) bColor = UI_YELLOW;
-
-  constexpr int bx = 152;
-  constexpr int by = 9;
-  d.drawRoundRect(bx, by, 18, 9, 2, UI_BORDER);
-  d.fillRect(bx + 18, by + 2, 2, 5, UI_BORDER);
-  int fillW = map(battery, 0, 100, 0, 14);
-  if (fillW > 0) d.fillRect(bx + 2, by + 2, fillW, 5, bColor);
-
+  // Mostrador numerico de porcentagem
   d.setTextDatum(middle_left);
+  d.setTextSize(1);
   d.setTextColor(bColor, UI_BG);
-  String batStr = M5.Power.isCharging() ? "+" : (String(battery) + "%");
-  d.drawString(batStr, bx + 22, 13);
+  String batStr = charging ? (String(battery) + "%+") : (String(battery) + "%");
+  d.drawString(batStr, x + 25, y + 5);
+}
+
+void drawStatusBar() {
+  auto& d = M5.Display;
+
+  // 1. Wi-Fi icone grafico (centrado e com status conectado / desconectado)
+  bool wifiConnected = (WiFi.status() == WL_CONNECTED);
+  drawWifiIcon(104, 7, wifiConnected);
+
+  // 2. Bateria com mostrador (icone grafico preenchido + porcentagem numerica)
+  int battery = constrain(M5.Power.getBatteryLevel(), 0, 100);
+  bool charging = M5.Power.isCharging();
+  drawBatteryGauge(126, 8, battery, charging);
 
   // 3. Relogio digital de alto contraste
   d.setTextDatum(middle_right);
+  d.setTextSize(1);
   d.setTextColor(clockIsValid() ? UI_YELLOW : UI_MUTED, UI_BG);
   d.drawString(clockTimeText(), 234, 13);
 }
@@ -2842,7 +2878,7 @@ void updateStatusBarClock() {
   if (!isMenuScreen(screen)) return;
   auto& d = M5.Display;
   d.startWrite();
-  d.fillRect(195, 2, 42, 23, UI_BG);
+  d.fillRect(190, 2, 48, 23, UI_BG);
   d.setTextDatum(middle_right);
   d.setTextSize(1);
   d.setTextColor(clockIsValid() ? UI_YELLOW : UI_MUTED, UI_BG);
@@ -3814,7 +3850,15 @@ void drawGestureScreen() {
   d.drawString("IA", 18, 16);
   d.setTextDatum(middle_left);
   d.setTextColor(UI_TEXT, UI_PANEL);
-  d.drawString("VARINHA 3D", 32, 16);
+  d.drawString("VARINHA", 32, 16);
+
+  // Icones de Wi-Fi e Bateria compactos no topo da tela
+  drawWifiIcon(84, 10, WiFi.status() == WL_CONNECTED);
+  int batLevel = constrain(M5.Power.getBatteryLevel(), 0, 100);
+  d.drawRoundRect(102, 10, 18, 9, 2, UI_BORDER);
+  d.fillRect(120, 12, 2, 5, UI_BORDER);
+  int bFill = map(batLevel, 0, 100, 0, 14);
+  if (bFill > 0) d.fillRect(104, 12, bFill, 5, batLevel > 20 ? UI_GREEN : UI_RED);
 
   // Barra de status de gesto
   d.fillRoundRect(6, 32, 123, 20, 3, UI_PANEL_ALT);
