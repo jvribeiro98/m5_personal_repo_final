@@ -1,4 +1,4 @@
-﻿name: Build e publicar firmware
+name: Build e publicar firmware
 
 on:
   push:
@@ -59,7 +59,7 @@ jobs:
       - name: Compilar firmware
         run: |
           arduino-cli compile \
-            --fqbn esp32:esp32:m5stack_stickc_plus2 \
+            --fqbn esp32:esp32:m5stack_stickc_plus2:PartitionScheme=default_8MB \
             --build-path "$GITHUB_WORKSPACE/.build/output" \
             --export-binaries \
             "$GITHUB_WORKSPACE/.build/m5_personal"
