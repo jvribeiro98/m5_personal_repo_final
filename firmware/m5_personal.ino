@@ -4418,38 +4418,56 @@ void initVoiceAiScreen() {
   redraw = true;
 }
 
+String extractJsonField(const String& json, const String& key) {
+  String searchKey = "\"" + key + "\"";
+  int kIdx = json.indexOf(searchKey);
+  if (kIdx == -1) return "";
+  int colonIdx = json.indexOf(":", kIdx + searchKey.length());
+  if (colonIdx == -1) return "";
+  int firstQuote = json.indexOf("\"", colonIdx + 1);
+  if (firstQuote == -1) return "";
+  int secondQuote = json.indexOf("\"", firstQuote + 1);
+  if (secondQuote == -1) return "";
+  return json.substring(firstQuote + 1, secondQuote);
+}
+
+String extractJsonBody(const String& json) {
+  String searchKey = "\"body\"";
+  int kIdx = json.indexOf(searchKey);
+  if (kIdx == -1) return "";
+  int colonIdx = json.indexOf(":", kIdx + searchKey.length());
+  if (colonIdx == -1) return "";
+  int firstQuote = json.indexOf("\"", colonIdx + 1);
+  if (firstQuote == -1) return "";
+  int lastBrace = json.lastIndexOf("}");
+  int endQuote = (lastBrace != -1) ? json.lastIndexOf("\"", lastBrace) : json.lastIndexOf("\"");
+  if (endQuote <= firstQuote) return "";
+  return json.substring(firstQuote + 1, endQuote);
+}
+
 void parseVoiceAiResponse(const String& rawLine) {
   String line = rawLine;
   line.trim();
   if (line.startsWith("{") && line.endsWith("}")) {
-    int titIdx = line.indexOf("\"title\":\"");
-    if (titIdx != -1) {
-      int titEnd = line.indexOf("\"", titIdx + 9);
-      voiceResultTitle = line.substring(titIdx + 9, titEnd);
-    }
-    int aIdx = line.indexOf("\"agent\":\"");
-    if (aIdx != -1) {
-      int aEnd = line.indexOf("\"", aIdx + 9);
-      voiceActiveAgent = line.substring(aIdx + 9, aEnd);
-    }
-    int tIdx = line.indexOf("\"text\":\"");
-    if (tIdx != -1) {
-      int tEnd = line.indexOf("\"", tIdx + 8);
-      voiceTranscription = line.substring(tIdx + 8, tEnd);
-    }
-    int bIdx = line.indexOf("\"body\":\"");
-    if (bIdx != -1) {
-      int bEnd = line.lastIndexOf("\"");
-      if (bEnd > bIdx + 8) {
-        voiceResultBody = line.substring(bIdx + 8, bEnd);
-      }
-    }
+    String t = extractJsonField(line, "title");
+    if (t.length() > 0) voiceResultTitle = t;
+
+    String a = extractJsonField(line, "agent");
+    if (a.length() > 0) voiceActiveAgent = a;
+
+    String tx = extractJsonField(line, "text");
+    if (tx.length() > 0) voiceTranscription = tx;
+
+    String b = extractJsonBody(line);
+    if (b.length() > 0) voiceResultBody = b;
+
     voiceState = VoiceState::RESULT;
     voiceScrollLine = 0;
     lastVoiceResultAt = millis();
     playWandChime();
     redraw = true;
-    Serial.printf("[VOICE PARSED] Titulo: %s | Agente: %s | Resp: %s\n", voiceResultTitle.c_str(), voiceActiveAgent.c_str(), voiceResultBody.c_str());
+    Serial.printf("[VOICE PARSED] Titulo: %s | Agente: %s | Texto: %s | Resp: %s\n",
+                  voiceResultTitle.c_str(), voiceActiveAgent.c_str(), voiceTranscription.c_str(), voiceResultBody.c_str());
   }
 }
 
