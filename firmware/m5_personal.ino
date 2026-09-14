@@ -4497,8 +4497,8 @@ void stopVoiceRecordingAndSend() {
   if (WiFi.status() == WL_CONNECTED && voiceAudioBuffer && voiceRecordedSamples > 0) {
     HTTPClient http;
     String url = "http://" + pcBridgeIp + ":" + String(pcBridgePort) + "/audio";
-    http.setConnectTimeout(1800);
-    http.setTimeout(4500);
+    http.setConnectTimeout(2500);
+    http.setTimeout(35000);
     if (http.begin(url)) {
       http.addHeader("Content-Type", "application/octet-stream");
       int code = http.POST((uint8_t*)voiceAudioBuffer, voiceRecordedSamples * sizeof(int16_t));
@@ -4660,16 +4660,16 @@ void drawVoiceAiScreen() {
     d.setTextDatum(top_left);
     d.setTextSize(1);
     d.setTextColor(UI_YELLOW, UI_PANEL);
-    d.drawString("Comandos de voz:", 112, 34);
+    d.drawString("Comandos p/ AGY:", 112, 34);
 
     d.setTextColor(UI_CYAN, UI_PANEL);
-    d.drawString("• 'abrir vscode'", 112, 48);
+    d.drawString("• 'abrir codex'", 112, 48);
     d.drawString("• 'abrir chrome'", 112, 60);
     d.drawString("• 'abrir terminal'", 112, 72);
 
     d.setTextColor(UI_MUTED, UI_PANEL);
-    d.drawString("• 'que horas sao?'", 112, 85);
-    d.drawString("• 'pergunta livre...'", 112, 98);
+    d.drawString("• 'crie um arquivo...'", 112, 85);
+    d.drawString("• 'perguntas livres...'", 112, 98);
 
   } else if (voiceState == VoiceState::LISTENING) {
     d.setTextDatum(top_left);
@@ -4688,7 +4688,7 @@ void drawVoiceAiScreen() {
     d.setTextDatum(top_left);
     d.setTextSize(1);
     d.setTextColor(UI_CYAN, UI_PANEL);
-    d.drawString("Processando com IA...", 112, 36);
+    d.drawString("Processando no AGY...", 112, 36);
 
     if (voiceTranscription.length() > 0) {
       d.setTextColor(UI_YELLOW, UI_PANEL);
@@ -4697,11 +4697,11 @@ void drawVoiceAiScreen() {
       d.drawString(tShown, 112, 56);
     } else {
       d.setTextColor(UI_MUTED, UI_PANEL);
-      d.drawString("Reconhecendo fala...", 112, 56);
+      d.drawString("Executando no PC...", 112, 56);
     }
 
     d.setTextColor(UI_TEXT, UI_PANEL);
-    d.drawString("Aguarde resposta do PC", 112, 82);
+    d.drawString("Aguarde o agente AGY", 112, 82);
 
   } else if (voiceState == VoiceState::RESULT) {
     d.setTextDatum(top_left);
