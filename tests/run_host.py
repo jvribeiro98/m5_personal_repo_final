@@ -5,6 +5,7 @@ from the sketch so these tests can run before and after a firmware fix.
 """
 from pathlib import Path
 import os
+import re
 import subprocess
 import sys
 
@@ -24,19 +25,29 @@ names = [
 ]
 
 def function(name):
-    import re
-    match = re.search(r'^(?:void|bool|String) ' + name + r'\([^;]*?\) \{', source, re.M)
+    match = re.search(r'^(?:void|bool|String|uint8_t) ' + name + r'\([^;]*?\)\s*\{', source, re.M)
     if not match:
         raise RuntimeError('Missing production function: ' + name)
-    end = source.index('\n}', match.end()) + 2
-    return source[match.start():end]
+    # Count real braces, ignoring braces inside C++ strings and comments.
+    depth = 1
+    tokens = re.compile(r'//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|[{}]', re.S)
+    for token in tokens.finditer(source, match.end()):
+        if token.group() == '{': depth += 1
+        elif token.group() == '}': depth -= 1
+        if depth == 0:
+            return source[match.start():token.end()]
+    raise RuntimeError('Unterminated production function: ' + name)
 
 types = source[source.index('enum class Screen'):source.index('// GLOBAIS')]
-globals_ = source[source.index('Preferences prefs;'):source.index('// PROTOTIPOS EXPLICITOS')]
+# Only Wi-Fi/IR state is used by this harness. Including the entire globals
+# section also pulls in BLE, audio transports and inline hardware functions.
+globals_ = source[source.index('Preferences prefs;'):source.index('constexpr uint32_t TEAM_A_HOLD_MS')]
+globals_ += source[source.index('TvDevice televisions[]'):source.index('// PROTOTIPOS EXPLICITOS')]
+globals_ += re.search(r'^uint32_t lastWeatherAttemptAt = .*?;', source, re.M).group(0)
 optional = ['parseIndexArg', 'acStateJson', 'handleWebApiAcState', 'wifiOperationBusy', 'acMinTemp']
 optional += ['requestWifiScan', 'processWifiScan']
 for name in optional:
-    if ('bool ' + name + '(' in source or 'String ' + name + '(' in source or 'void ' + name + '(' in source):
+    if re.search(r'^(?:void|bool|String|uint8_t) ' + name + r'\([^;]*?\)\s*\{', source, re.M):
         names.insert(0, name)
 constants = source[source.index('constexpr uint8_t IR_PIN'):source.index('// TIPOS')]
 keys = source[source.index('const char BRUCE_KEYS'):source.index('String wifiKeyboard(const String& title, const String& initial, bool masked, bool& cancelled) {')]
@@ -58,4 +69,4 @@ if os.name == 'nt':
 else:
     executable = out / 'test'
     subprocess.run(['g++', '-std=c++17', '-I' + str(root / 'tests'), str(out / 'test.cpp'), '-o', str(executable)], check=True)
-sys.exit(subprocess.run([str(executable)]).returncode)
+sys.exit(subprocess.run([str(executable)], timeout=30).returncode)

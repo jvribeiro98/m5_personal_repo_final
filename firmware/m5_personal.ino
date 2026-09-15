@@ -294,6 +294,9 @@ bool forceFullRedraw = true;
 
 String toast;
 uint32_t toastUntil = 0;
+inline bool isToastActive() {
+  return toast.length() > 0 && ((int32_t)(toastUntil - millis()) > 0);
+}
 ButtonCState buttonC;
 
 constexpr uint32_t TEAM_A_HOLD_MS = 3000;
@@ -431,6 +434,7 @@ static constexpr size_t VOICE_SAMPLE_RATE = 16000;
 static constexpr size_t VOICE_MAX_SECS = 30;
 static constexpr size_t VOICE_BUFFER_BYTES = VOICE_SAMPLE_RATE * VOICE_MAX_SECS * sizeof(int16_t);
 static int16_t* voiceAudioBuffer = nullptr;
+static size_t voiceAudioBufferCapacityBytes = 0;
 static size_t voiceRecordedSamples = 0;
 static String pcBridgeIp = "192.168.0.2";
 static int pcBridgePort = 5000;
@@ -447,6 +451,11 @@ inline M5Canvas& getGfx() {
   ensureUiCanvas();
   return uiCanvas;
 }
+#include "VoiceHttpTransport.h"
+VoiceHttpTransport voiceTransport;
+uint32_t voiceGeneration = 0;
+void processVoiceTransport();
+
 void drawVoiceAiScreen();
 void processVoiceAiScreen();
 void initVoiceAiScreen();
@@ -463,11 +472,10 @@ void drawWrappedText(int x, int y, int maxW, int maxLines, int startLine, const 
 M5StickBleMouse bleMouse;
 bool bleMouseStarted = false;
 
+#include "MouseCalibration.h"
+MouseCalibration mouseCalibration;
+
 bool mouseCalibrated = false;
-uint16_t mouseCalibSamples = 0;
-float mouseSumGx = 0.0f;
-float mouseSumGy = 0.0f;
-float mouseSumGz = 0.0f;
 float mouseBiasGx = 0.0f;
 float mouseBiasGy = 0.0f;
 float mouseBiasGz = 0.0f;
@@ -481,8 +489,7 @@ int mouseDotX = 67, mouseDotY = 111;
 void resetMouseCalibration() {
   bleMouse.releaseAll();
   mouseCalibrated = false;
-  mouseCalibSamples = 0;
-  mouseSumGx = mouseSumGy = mouseSumGz = 0;
+  mouseCalibration.reset();
   mouseSmoothDx = mouseSmoothDy = 0;
   mouseRemainderX = mouseRemainderY = 0;
   mouseSampleAt = millis();
@@ -699,6 +706,8 @@ void ButtonCState::begin() {
   rawPressed = digitalRead(BTN_C_PIN) == LOW;
   stablePressed = rawPressed;
   changedAt = millis();
+  pressedAt = millis();
+  holdSent = stablePressed;
 }
 
 void ButtonCState::update() {
@@ -834,8 +843,12 @@ void loadTrainingData() {
     prefs.getBytes("history", trainingHistory, sizeof(trainingHistory));
   prefs.end();
 
-  if (trainingSession.horseCount > MAX_TRAIN_HORSES) trainingSession = TrainingSession();
-  if (trainingSession.currentHorse >= trainingSession.horseCount) trainingSession.currentHorse = 0;
+  if (trainingSession.horseCount > MAX_TRAIN_HORSES || (trainingSession.active && trainingSession.horseCount == 0)) {
+    trainingSession = TrainingSession();
+  }
+  if (trainingSession.horseCount > 0 && trainingSession.currentHorse >= trainingSession.horseCount) {
+    trainingSession.currentHorse = 0;
+  }
   for (uint8_t r = 0; r < MAX_TRAIN_HISTORY; r++) {
     if (trainingHistory[r].horseCount > MAX_TRAIN_HORSES) trainingHistory[r] = TrainingRecord();
   }
@@ -890,11 +903,12 @@ bool trainingHorseAlreadyChosen(uint8_t horseId, uint8_t beforeSlot) {
   return false;
 }
 
-void normalizeTrainingCandidate(int direction) {
+bool normalizeTrainingCandidate(int direction) {
   for (uint8_t attempt = 0; attempt < MAX_TRAIN_HORSES; attempt++) {
     trainingSetupCandidate = (trainingSetupCandidate + MAX_TRAIN_HORSES + direction) % MAX_TRAIN_HORSES;
-    if (!trainingHorseAlreadyChosen(trainingSetupCandidate, trainingSetupSlot)) return;
+    if (!trainingHorseAlreadyChosen(trainingSetupCandidate, trainingSetupSlot)) return true;
   }
+  return false;
 }
 
 // ============================================================
@@ -984,6 +998,7 @@ String prefKey(uint8_t device, const char* suffix) {
 void saveAcState(uint8_t index) {
   if (index >= AC_COUNT) return;
 
+  if (!prefs.begin("m5-ir", false)) return;
   const AcState& state = airConditioners[index].state;
   prefs.putBool(prefKey(index, "p").c_str(), state.power);
   prefs.putUChar(prefKey(index, "t").c_str(), state.temp);
@@ -992,30 +1007,32 @@ void saveAcState(uint8_t index) {
   prefs.putBool(prefKey(index, "s").c_str(), state.swing);
   prefs.putBool(prefKey(index, "u").c_str(), state.turbo);
   prefs.putUShort(prefKey(index, "z").c_str(), state.sleepMinutes);
+  prefs.end();
 }
 
 void loadAcStates() {
-  prefs.begin("m5-ir", false);
+  if (prefs.begin("m5-ir", true)) {
+    for (uint8_t i = 0; i < AC_COUNT; i++) {
+      AcState& state = airConditioners[i].state;
+      state.power = prefs.getBool(prefKey(i, "p").c_str(), false);
+      state.temp = prefs.getUChar(prefKey(i, "t").c_str(), 23);
+      state.mode = static_cast<AcMode>(prefs.getUChar(prefKey(i, "m").c_str(), 1));
+      state.fan = static_cast<AcFan>(prefs.getUChar(prefKey(i, "f").c_str(), 0));
+      state.swing = prefs.getBool(prefKey(i, "s").c_str(), true);
+      state.turbo = prefs.getBool(prefKey(i, "u").c_str(), false);
+      state.sleepMinutes = prefs.getUShort(prefKey(i, "z").c_str(), 0);
 
-  for (uint8_t i = 0; i < AC_COUNT; i++) {
-    AcState& state = airConditioners[i].state;
-    state.power = prefs.getBool(prefKey(i, "p").c_str(), false);
-    state.temp = prefs.getUChar(prefKey(i, "t").c_str(), 23);
-    state.mode = static_cast<AcMode>(prefs.getUChar(prefKey(i, "m").c_str(), 1));
-    state.fan = static_cast<AcFan>(prefs.getUChar(prefKey(i, "f").c_str(), 0));
-    state.swing = prefs.getBool(prefKey(i, "s").c_str(), true);
-    state.turbo = prefs.getBool(prefKey(i, "u").c_str(), false);
-    state.sleepMinutes = prefs.getUShort(prefKey(i, "z").c_str(), 0);
+      if (state.temp < 16 || state.temp > 30) state.temp = 23;
 
-    if (state.temp < 16 || state.temp > 30) state.temp = 23;
+      if (static_cast<uint8_t>(state.mode) > static_cast<uint8_t>(AcMode::HEAT)) {
+        state.mode = AcMode::COOL;
+      }
 
-    if (static_cast<uint8_t>(state.mode) > static_cast<uint8_t>(AcMode::HEAT)) {
-      state.mode = AcMode::COOL;
+      if (static_cast<uint8_t>(state.fan) > static_cast<uint8_t>(AcFan::HIGH_SPEED)) {
+        state.fan = AcFan::AUTO;
+      }
     }
-
-    if (static_cast<uint8_t>(state.fan) > static_cast<uint8_t>(AcFan::HIGH_SPEED)) {
-      state.fan = AcFan::AUTO;
-    }
+    prefs.end();
   }
 }
 
@@ -1279,22 +1296,14 @@ void loadSavedNetworks() {
   }
   savedNetworkCount = writeIndex;
 
-  // Assegura que a rede pré-configurada do usuário (Ribeiro) esteja sempre cadastrada
-  if (findSavedNetwork("Ribeiro") < 0) {
-    if (savedNetworkCount < MAX_SAVED_NETWORKS) {
-      savedNetworks[savedNetworkCount].ssid = "Ribeiro";
-      savedNetworks[savedNetworkCount].password = "Jv22019198@";
-      savedNetworks[savedNetworkCount].health = SavedNetworkHealth::UNTESTED;
-      savedNetworks[savedNetworkCount].failure = SavedNetworkFailure::NONE;
-      savedNetworks[savedNetworkCount].lastRssi = -50;
-      savedNetworkCount++;
-    } else {
-      savedNetworks[0].ssid = "Ribeiro";
-      savedNetworks[0].password = "Jv22019198@";
-      savedNetworks[0].health = SavedNetworkHealth::UNTESTED;
-      savedNetworks[0].failure = SavedNetworkFailure::NONE;
-      savedNetworks[0].lastRssi = -50;
-    }
+  // Assegura que a rede padrao esteja cadastrada se a lista estiver vazia (Bug 14)
+  if (savedNetworkCount == 0 && findSavedNetwork("Ribeiro") < 0) {
+    savedNetworks[0].ssid = "Ribeiro";
+    savedNetworks[0].password = "Jv22019198@";
+    savedNetworks[0].health = SavedNetworkHealth::UNTESTED;
+    savedNetworks[0].failure = SavedNetworkFailure::NONE;
+    savedNetworks[0].lastRssi = -50;
+    savedNetworkCount = 1;
     saveSavedNetworks();
   }
 
@@ -1304,8 +1313,7 @@ void loadSavedNetworks() {
 }
 
 void saveSavedNetworks() {
-  prefs.begin("wifi-nets", false);
-  prefs.clear();
+  if (!prefs.begin("wifi-nets", false)) return;
   prefs.putUChar("count", savedNetworkCount);
 
   for (uint8_t i = 0; i < savedNetworkCount; i++) {
@@ -1314,6 +1322,13 @@ void saveSavedNetworks() {
     prefs.putUChar(wifiPrefKey(i, "h").c_str(), static_cast<uint8_t>(savedNetworks[i].health));
     prefs.putUChar(wifiPrefKey(i, "f").c_str(), static_cast<uint8_t>(savedNetworks[i].failure));
     prefs.putInt(wifiPrefKey(i, "r").c_str(), savedNetworks[i].lastRssi);
+  }
+  for (uint8_t i = savedNetworkCount; i < MAX_SAVED_NETWORKS; i++) {
+    prefs.remove(wifiPrefKey(i, "s").c_str());
+    prefs.remove(wifiPrefKey(i, "p").c_str());
+    prefs.remove(wifiPrefKey(i, "h").c_str());
+    prefs.remove(wifiPrefKey(i, "f").c_str());
+    prefs.remove(wifiPrefKey(i, "r").c_str());
   }
   prefs.end();
 }
@@ -1376,6 +1391,12 @@ void deleteSavedNetwork(uint8_t index) {
   savedNetworks[savedNetworkCount].ssid = "";
   savedNetworks[savedNetworkCount].password = "";
   saveSavedNetworks();
+
+  if (selected >= savedNetworkCount && savedNetworkCount > 0) {
+    selected = savedNetworkCount - 1;
+  } else if (savedNetworkCount == 0) {
+    selected = 0;
+  }
 
   if (deletingCurrent) {
     WiFi.disconnect(false, false);
@@ -1679,6 +1700,7 @@ String htmlEscape(String value) {
   value.replace("<", "&lt;");
   value.replace(">", "&gt;");
   value.replace("\"", "&quot;");
+  value.replace("'", "&#39;");
   return value;
 }
 
@@ -1999,21 +2021,98 @@ void handleWebApiTv() {
 }
 
 void handleWebApiAc() {
-  if (!webServer.hasArg("device") || !webServer.hasArg("action")) {
-    sendJson(false, "Parametros ausentes");
+  int device;
+  if (!parseIndexArg("device", AC_COUNT, device)) {
+    sendJson(false, "Dispositivo invalido");
     return;
   }
 
-  int device, action;
-  if (!parseIndexArg("device", AC_COUNT, device) ||
-      !parseIndexArg("action", AC_MENU_COUNT, action)) {
-    sendJson(false, "Comando invalido");
+  const bool hasAction = webServer.hasArg("action");
+  const bool hasPower = webServer.hasArg("power");
+  const bool hasTemp = webServer.hasArg("temp");
+
+  if (!hasAction && !hasPower && !hasTemp) {
+    sendJson(false, "Acao obrigatoria");
     return;
+  }
+
+  int action = -1;
+  if (hasAction) {
+    if (!parseIndexArg("action", AC_MENU_COUNT, action)) {
+      sendJson(false, "Acao invalida");
+      return;
+    }
+  }
+
+  if (hasPower && action == 7) {
+    sendJson(false, "Nao combine power com toggle");
+    return;
+  }
+
+  if (hasTemp && (action == 0 || action == 1)) {
+    sendJson(false, "Nao combine temp com alteracao relativa");
+    return;
+  }
+
+  bool powerOn = false;
+  if (hasPower) {
+    String p = webServer.arg("power");
+    if (p == "on") {
+      powerOn = true;
+    } else if (p == "off") {
+      powerOn = false;
+    } else {
+      sendJson(false, "Power deve ser 'on' ou 'off'");
+      return;
+    }
+  }
+
+  int targetTemp = -1;
+  if (hasTemp) {
+    String t = webServer.arg("temp");
+    t.trim();
+    if (t.length() == 0) {
+      sendJson(false, "Temperatura invalida");
+      return;
+    }
+    for (size_t i = 0; i < t.length(); i++) {
+      if (!isdigit(t[i])) {
+        sendJson(false, "Temperatura deve ser inteiro");
+        return;
+      }
+    }
+    long val = t.toInt();
+    if (val < 16 || val > 30) {
+      sendJson(false, "Temperatura fora da faixa 16-30");
+      return;
+    }
+    targetTemp = (int)val;
   }
 
   const uint8_t physicalAc = activeAc;
   activeAc = device;
-  executeAcAction(action);
+  AcState& state = airConditioners[device].state;
+
+  if (hasPower) {
+    if (state.power != powerOn) {
+      toggleAcPower();
+    }
+  }
+
+  if (targetTemp >= 16 && targetTemp <= 30) {
+    if (state.temp != (uint8_t)targetTemp) {
+      if (hasPower && state.power != powerOn) delay(120);
+      state.temp = (uint8_t)targetTemp;
+      state.power = true;
+      sendAcState("TEMP");
+    }
+  }
+
+  if (hasAction && action != -1) {
+    delay(120);
+    executeAcAction(action);
+  }
+
   activeAc = physicalAc;
   sendJson(true, String(airConditioners[device].name) + " atualizado", acStateJson(device));
 }
@@ -2304,8 +2403,8 @@ void handleWebApiTrainingStart() {
 }
 void handleWebApiTrainingAdd() { if (!trainingSession.active) { sendJson(false,"Nenhum treino ativo"); return; } addTrainingPass(); sendJson(true,"Passada adicionada"); }
 void handleWebApiTrainingRemove() { if (!trainingSession.active) { sendJson(false,"Nenhum treino ativo"); return; } removeTrainingPass(); sendJson(true,"Passada removida"); }
-void handleWebApiTrainingNext() { if (!trainingSession.active) { sendJson(false,"Nenhum treino ativo"); return; } trainingSession.currentHorse=(trainingSession.currentHorse+1)%trainingSession.horseCount; saveTrainingSession(); redraw=true; sendJson(true,"Próximo cavalo"); }
-void handleWebApiTrainingPrevious() { if (!trainingSession.active) { sendJson(false,"Nenhum treino ativo"); return; } trainingSession.currentHorse=(trainingSession.currentHorse+trainingSession.horseCount-1)%trainingSession.horseCount; saveTrainingSession(); redraw=true; sendJson(true,"Cavalo anterior"); }
+void handleWebApiTrainingNext() { if (!trainingSession.active || !trainingSession.horseCount) { sendJson(false,"Nenhum treino ativo"); return; } trainingSession.currentHorse=(trainingSession.currentHorse+1)%trainingSession.horseCount; saveTrainingSession(); redraw=true; sendJson(true,"Próximo cavalo"); }
+void handleWebApiTrainingPrevious() { if (!trainingSession.active || !trainingSession.horseCount) { sendJson(false,"Nenhum treino ativo"); return; } trainingSession.currentHorse=(trainingSession.currentHorse+trainingSession.horseCount-1)%trainingSession.horseCount; saveTrainingSession(); redraw=true; sendJson(true,"Cavalo anterior"); }
 void handleWebApiTrainingEnd() { if (!trainingSession.active) { sendJson(false,"Nenhum treino ativo"); return; } finishTraining(); screen=Screen::TEAM_TRAIN_SUMMARY; sendJson(true,"Treino salvo"); }
 
 
@@ -2362,8 +2461,8 @@ void handleWebApiBrightness() {
 void handleWebApiClockSync() {
   if (WiFi.status()!=WL_CONNECTED) { sendJson(false,"Sem internet"); return; }
   lastWeatherAttemptAt=millis();
-  if (updateLocationAndWeather()) sendJson(true,"Horário e clima atualizados");
-  else sendJson(false,"Falha ao atualizar");
+  triggerWeatherUpdateAsync();
+  sendJson(true,"Atualização de horário e clima iniciada");
 }
 
 void configureWebRoutes() {
@@ -2848,29 +2947,45 @@ bool updateLocationAndWeather() {
   return true;
 }
 
+static TaskHandle_t weatherTaskHandle = nullptr;
+static volatile bool weatherTaskRunning = false;
+
+static void weatherTaskEntry(void* param) {
+  weatherTaskRunning = true;
+  updateLocationAndWeather();
+  weatherTaskRunning = false;
+  weatherTaskHandle = nullptr;
+  vTaskDelete(nullptr);
+}
+
+void triggerWeatherUpdateAsync() {
+  if (weatherTaskRunning || WiFi.status() != WL_CONNECTED) return;
+  if (xTaskCreatePinnedToCore(weatherTaskEntry, "weather-task", 4096, nullptr, 1, &weatherTaskHandle, 0) != pdPASS) {
+    weatherTaskRunning = false;
+    weatherTaskHandle = nullptr;
+  }
+}
+
 void processWeatherAndClock() {
   if (WiFi.status() != WL_CONNECTED) return;
 
-  // Se o relógio do sistema ainda não estiver ajustado, verifica se o NTP já respondeu em segundo plano
-  if (!clockIsValid()) {
+  // Rate-limit NTP check to once every 3 seconds instead of every 10ms frame (Bug 04)
+  static uint32_t lastNtpCheckAt = 0;
+  const uint32_t now = millis();
+  if (!clockIsValid() && (now - lastNtpCheckAt >= 3000UL)) {
+    lastNtpCheckAt = now;
     tm value;
-    if (getLocalTime(&value, 50) && value.tm_year + 1900 >= 2024) {
+    if (getLocalTime(&value, 20) && value.tm_year + 1900 >= 2024) {
       M5.Rtc.setDateTime(m5::rtc_datetime_t(value));
       redraw = true;
     }
   }
 
-  const uint32_t now = millis();
   const bool newNetwork = (lastWeatherSsid != WiFi.SSID());
-  // Se for rede nova ou se já passou o tempo de refresh (40 min), ou se a última tentativa falhou há mais de 45s
   if (newNetwork || now - lastWeatherAttemptAt >= WEATHER_REFRESH_MS) {
     lastWeatherAttemptAt = now;
-    if (!updateLocationAndWeather()) {
-      // Em caso de falha, marca que tentou para não entrar em loop infinito travando a CPU
-      lastWeatherSsid = WiFi.SSID();
-      // Agenda próxima tentativa após 45 segundos em vez de tentar a cada 10ms
-      lastWeatherAttemptAt = now - WEATHER_REFRESH_MS + 45000UL;
-    }
+    lastWeatherSsid = WiFi.SSID();
+    triggerWeatherUpdateAsync();
   }
 }
 
@@ -3060,7 +3175,6 @@ void drawWeatherIcon(int x, int y, float temp, bool connected) {
 
 void drawCyberWatchface(bool fullClear) {
   auto& d = getGfx();
-  d.setRotation(1);
 
   time_t now = time(nullptr);
   tm value;
@@ -3427,7 +3541,7 @@ void drawFooter() {
   display.fillRect(0, 120, 240, 15, UI_BG);
   display.setTextSize(1);
 
-  if (toast.length() && millis() < toastUntil) {
+  if (isToastActive()) {
     display.fillRoundRect(8, 119, 224, 15, 3, UI_PANEL_ALT);
     display.setTextDatum(middle_center);
     display.setTextColor(UI_GREEN, UI_PANEL_ALT);
@@ -3643,7 +3757,7 @@ void drawFooter() {
     display.drawString("C", 147, 126);
     display.setTextColor(UI_TEXT, UI_BG);
     display.setTextDatum(middle_left);
-    display.drawString("Voltar", 157, 126);
+    display.drawString(screen == Screen::MAIN ? "Subir" : "Voltar", 157, 126);
   }
 }
 
@@ -4423,62 +4537,74 @@ void startBleMouse() {
 
 void updateMouseSearchingDots() {
   auto& d = M5.Display;
-  d.fillRoundRect(8, 35, 119, 22, 6, UI_PANEL);
+  d.fillRoundRect(6, 38, 116, 18, 3, UI_PANEL);
   d.setTextSize(1);
   d.setTextDatum(middle_center);
   d.setTextColor(UI_SELECTED, UI_PANEL);
   const char* state = !M5.Imu.isEnabled() ? "ERRO NO SENSOR" :
     !isMouseConnected() ? (bleMouse.isConnected() ? "CONECTANDO" : "PAREAR BLUETOOTH") :
     !mouseCalibrated ? "MANTENHA PARADO" : "PRONTO";
-  d.drawString(state, 67, 46);
+  d.drawString(state, 64, 47);
 }
 
 void updateMouseCrosshair(float vx, float vy, uint16_t ballColor) {
   auto& d = M5.Display;
   d.startWrite();
   d.fillCircle(mouseDotX, mouseDotY, 5, UI_BG);
-  d.drawCircle(67, 111, 29, UI_BORDER);
-  d.drawFastHLine(32, 111, 71, UI_BORDER);
-  d.drawFastVLine(67, 76, 71, UI_BORDER);
-  mouseDotX = constrain(67 + (int)(vx * 0.45f), 44, 90);
-  mouseDotY = constrain(111 + (int)(vy * 0.45f), 88, 134);
+  d.drawCircle(181, 68, 32, UI_BORDER);
+  d.drawFastHLine(149, 68, 64, UI_BORDER);
+  d.drawFastVLine(181, 36, 64, UI_BORDER);
+  mouseDotX = constrain(181 + (int)(vx * 0.5f), 152, 210);
+  mouseDotY = constrain(68 + (int)(vy * 0.5f), 39, 97);
   d.fillCircle(mouseDotX, mouseDotY, 4, ballColor);
   d.endWrite();
 }
 
 void drawMouseScreen() {
-  auto& d = M5.Display;
+  auto& d = getGfx();
+  d.fillScreen(UI_BG);
+
+  // Painel Esquerdo: Identificação, Estado e Atalhos
   d.setTextSize(1);
   d.setTextDatum(middle_left);
   d.setTextColor(UI_MUTED, UI_BG);
-  d.drawString("M5 / CONTROLE", 9, 10);
+  d.drawString("M5 / CONTROLE", 8, 12);
   d.setTextSize(2);
   d.setTextColor(UI_TEXT, UI_BG);
-  d.drawString("Air Mouse", 9, 25);
-  updateMouseSearchingDots();
-  d.fillRect(4, 60, 127, 15, UI_BG);
+  d.drawString("Air Mouse", 8, 26);
+
+  d.fillRoundRect(6, 38, 116, 18, 3, UI_PANEL);
   d.setTextSize(1);
   d.setTextDatum(middle_center);
-  d.setTextColor(UI_MUTED, UI_BG);
-  d.drawString(!isMouseConnected() ? "M5Stick Mouse" :
-    !mouseCalibrated ? "Apoie por 1 segundo" : "Mova para apontar", 67, 66);
-  d.fillRect(28, 76, 79, 72, UI_BG);
-  mouseDotX = 67; mouseDotY = 111;
-  updateMouseCrosshair(0, 0, UI_SELECTED);
-  d.fillRoundRect(8, 155, 119, 53, 7, UI_PANEL);
-  d.setTextDatum(middle_left);
   d.setTextColor(UI_SELECTED, UI_PANEL);
-  d.drawString("A", 16, 168);
-  d.drawString("B", 16, 192);
-  d.setTextColor(UI_TEXT, UI_PANEL);
-  d.drawString("Esquerdo", 32, 165);
-  d.drawString("Direito", 32, 192);
-  d.setTextColor(UI_MUTED, UI_PANEL);
-  d.drawString("Segure: arraste", 32, 177);
-  d.setTextDatum(middle_center);
+  const char* state = !M5.Imu.isEnabled() ? "ERRO NO SENSOR" :
+    !isMouseConnected() ? (bleMouse.isConnected() ? "CONECTANDO" : "PAREAR BLUETOOTH") :
+    !mouseCalibrated ? "MANTENHA PARADO" : "PRONTO";
+  d.drawString(state, 64, 47);
+
+  d.setTextDatum(middle_left);
+  d.setTextColor(UI_TEXT, UI_BG);
+  d.drawString("A: Esq | B: Dir", 8, 66);
   d.setTextColor(UI_MUTED, UI_BG);
-  d.drawString("C: voltar ao menu", 67, 219);
-  d.drawString("Segure C: calibrar", 67, 231);
+  d.drawString("Segure A: Arraste", 8, 80);
+  d.drawString("C: Sair | Seg C: Calib", 8, 94);
+
+  d.drawRoundRect(8, 108, 112, 7, 2, UI_BORDER);
+  if (mouseCalibrated) {
+    d.fillRect(10, 110, 108, 3, UI_GREEN);
+  }
+
+  // Painel Direito: Retículo da Mira Giroscópica
+  d.drawRoundRect(128, 6, 106, 122, 4, UI_PANEL);
+  d.setTextDatum(top_center);
+  d.setTextColor(UI_MUTED, UI_BG);
+  d.drawString("MIRA GYRO", 181, 12);
+  d.drawCircle(181, 68, 32, UI_BORDER);
+  d.drawFastHLine(149, 68, 64, UI_BORDER);
+  d.drawFastVLine(181, 36, 64, UI_BORDER);
+  mouseDotX = 181;
+  mouseDotY = 68;
+  d.fillCircle(mouseDotX, mouseDotY, 4, UI_SELECTED);
 }
 
 void playWandChime() {
@@ -4504,7 +4630,7 @@ void ensureUiCanvas() {
       uiCanvas.setPsram(true);
     }
     uiCanvas.createSprite(240, 135);
-    uiCanvas.setRotation(1);
+    uiCanvas.setRotation(0);
     uiCanvasReady = true;
   }
 }
@@ -4554,13 +4680,17 @@ void initVoiceAiScreen() {
   if (!voiceAudioBuffer) {
     if (psramFound()) {
       voiceAudioBuffer = (int16_t*)ps_malloc(VOICE_BUFFER_BYTES);
+      if (voiceAudioBuffer) voiceAudioBufferCapacityBytes = VOICE_BUFFER_BYTES;
     }
     if (!voiceAudioBuffer) {
       size_t fb = VOICE_SAMPLE_RATE * 8 * sizeof(int16_t);
       voiceAudioBuffer = (int16_t*)heap_caps_malloc(fb, MALLOC_CAP_8BIT);
+      if (voiceAudioBuffer) voiceAudioBufferCapacityBytes = fb;
     }
     if (!voiceAudioBuffer) {
-      voiceAudioBuffer = (int16_t*)malloc(VOICE_SAMPLE_RATE * 4 * sizeof(int16_t));
+      size_t fb = VOICE_SAMPLE_RATE * 4 * sizeof(int16_t);
+      voiceAudioBuffer = (int16_t*)malloc(fb);
+      if (voiceAudioBuffer) voiceAudioBufferCapacityBytes = fb;
     }
   }
   voiceRecordedSamples = 0;
@@ -4586,25 +4716,48 @@ String extractJsonField(const String& json, const String& key) {
   if (kIdx == -1) return "";
   int colonIdx = json.indexOf(":", kIdx + searchKey.length());
   if (colonIdx == -1) return "";
-  int firstQuote = json.indexOf("\"", colonIdx + 1);
-  if (firstQuote == -1) return "";
-  int secondQuote = json.indexOf("\"", firstQuote + 1);
-  if (secondQuote == -1) return "";
-  return json.substring(firstQuote + 1, secondQuote);
+
+  int valStart = colonIdx + 1;
+  const int len = json.length();
+  while (valStart < len && (json[valStart] == ' ' || json[valStart] == '\t' || json[valStart] == '\r' || json[valStart] == '\n')) {
+    valStart++;
+  }
+  if (valStart >= len) return "";
+
+  if (json[valStart] == '\"') {
+    valStart++;
+    String out;
+    out.reserve(64);
+    for (int i = valStart; i < len; ++i) {
+      char c = json[i];
+      if (c == '\\' && i + 1 < len) {
+        char next = json[++i];
+        if (next == '\"') out += '\"';
+        else if (next == '\\') out += '\\';
+        else if (next == 'n') out += '\n';
+        else if (next == 'r') out += '\r';
+        else if (next == 't') out += '\t';
+        else { out += '\\'; out += next; }
+      } else if (c == '\"') {
+        return out;
+      } else {
+        out += c;
+      }
+    }
+    return out;
+  } else {
+    int valEnd = valStart;
+    while (valEnd < len && json[valEnd] != ',' && json[valEnd] != '}' && json[valEnd] != '\r' && json[valEnd] != '\n') {
+      valEnd++;
+    }
+    String out = json.substring(valStart, valEnd);
+    out.trim();
+    return out;
+  }
 }
 
 String extractJsonBody(const String& json) {
-  String searchKey = "\"body\"";
-  int kIdx = json.indexOf(searchKey);
-  if (kIdx == -1) return "";
-  int colonIdx = json.indexOf(":", kIdx + searchKey.length());
-  if (colonIdx == -1) return "";
-  int firstQuote = json.indexOf("\"", colonIdx + 1);
-  if (firstQuote == -1) return "";
-  int lastBrace = json.lastIndexOf("}");
-  int endQuote = (lastBrace != -1) ? json.lastIndexOf("\"", lastBrace) : json.lastIndexOf("\"");
-  if (endQuote <= firstQuote) return "";
-  return json.substring(firstQuote + 1, endQuote);
+  return extractJsonField(json, "body");
 }
 
 void parseVoiceAiResponse(const String& rawLine) {
@@ -4655,6 +4808,10 @@ void parseVoiceAiResponse(const String& rawLine) {
 static uint32_t voiceRecStartTime = 0;
 
 void startVoiceRecording() {
+  if (voiceTransport.busy()) {
+    Serial.println("[VOICE] Bloqueado: transporte HTTP anterior ainda ocupado.");
+    return;
+  }
   voiceState = VoiceState::LISTENING;
   voiceRecordedSamples = 0;
   voiceScrollLine = 0;
@@ -4704,26 +4861,13 @@ void stopVoiceRecordingAndSend() {
   Serial.println("VOICE_STOP");
 
   bool sentOk = false;
-  if (WiFi.status() == WL_CONNECTED && voiceAudioBuffer && voiceRecordedSamples > 0) {
-    HTTPClient http;
+  if (WiFi.status() == WL_CONNECTED && voiceAudioBuffer && voiceRecordedSamples > 0 && pcBridgeIp.length() > 0) {
     String url = "http://" + pcBridgeIp + ":" + String(pcBridgePort) + "/audio";
-    http.setConnectTimeout(2500);
-    http.setTimeout(45000);
-    if (http.begin(url)) {
-      http.addHeader("Content-Type", "application/octet-stream");
-      http.addHeader("X-Voice-Mode", voiceInputMode == VoiceInputMode::ALEXA ? "ALEXA" : "PTT");
-      int code = http.POST((uint8_t*)voiceAudioBuffer, voiceRecordedSamples * sizeof(int16_t));
-      if (code == 200) {
-        String resp = http.getString();
-        resp.trim();
-        Serial.printf("[VOICE] Resposta HTTP recebida: %s\n", resp.c_str());
-        parseVoiceAiResponse(resp);
-        sentOk = true;
-      } else {
-        Serial.printf("[VOICE] Falha HTTP: %d\n", code);
-        voiceBridgeConnected = false;
-      }
-      http.end();
+    String mode = (voiceInputMode == VoiceInputMode::ALEXA ? "ALEXA" : "PTT");
+    voiceGeneration++;
+    if (voiceTransport.start(url, mode, (const uint8_t*)voiceAudioBuffer, voiceRecordedSamples * sizeof(int16_t), voiceGeneration)) {
+      Serial.println("[VOICE] Enviando audio em background (FreeRTOS)...");
+      sentOk = true;
     }
   }
 
@@ -4741,6 +4885,23 @@ void stopVoiceRecordingAndSend() {
   voxSilenceStart = 0;
   voiceRecordedSamples = 0;
   redraw = true;
+}
+
+void processVoiceTransport() {
+  VoiceHttpTransport::Reply reply;
+  if (voiceTransport.poll(reply)) {
+    if (reply.status == 200) {
+      Serial.printf("[VOICE] Resposta HTTP recebida: %s\n", reply.body.c_str());
+      parseVoiceAiResponse(reply.body);
+    } else {
+      Serial.printf("[VOICE] Falha HTTP background: %d\n", reply.status);
+      voiceBridgeConnected = false;
+      if (voiceState == VoiceState::THINKING) {
+        voiceState = VoiceState::IDLE;
+        redraw = true;
+      }
+    }
+  }
 }
 
 int countWrappedTextLines(int maxW, const String& text) {
@@ -5097,6 +5258,7 @@ void drawVoiceAiScreen() {
 
 void processVoiceAiScreen() {
   lastUserActivityAt = millis();
+  processVoiceTransport();
 
   // ATENÇÃO: NÃO HÁ TIMER DE 6 OU 7 SEGUNDOS DERRUBANDO A TELA!
   // A resposta permanece na tela pelo tempo que o usuário quiser.
@@ -5183,8 +5345,9 @@ void processVoiceAiScreen() {
   // ============================================================
   // ESCUTA EM SEGUNDO PLANO (ATIVO EM LISTENING OU EM RESULT NO MODO ALEXA)
   // ============================================================
-  const bool shouldListen = (voiceState == VoiceState::LISTENING) ||
-                            (voiceState == VoiceState::RESULT && voiceInputMode == VoiceInputMode::ALEXA);
+  const bool shouldListen = !voiceTransport.busy() &&
+                            ((voiceState == VoiceState::LISTENING) ||
+                            (voiceState == VoiceState::RESULT && voiceInputMode == VoiceInputMode::ALEXA));
 
   if (shouldListen) {
     if (!voiceMicRecordingActive) {
@@ -5193,7 +5356,10 @@ void processVoiceAiScreen() {
     }
 
     constexpr size_t CHUNK = 512;
-    if (voiceAudioBuffer && (voiceRecordedSamples + CHUNK <= VOICE_BUFFER_BYTES / sizeof(int16_t))) {
+    const size_t maxSamples = voiceAudioBufferCapacityBytes > 0
+        ? (voiceAudioBufferCapacityBytes / sizeof(int16_t))
+        : (VOICE_BUFFER_BYTES / sizeof(int16_t));
+    if (voiceAudioBuffer && (voiceRecordedSamples + CHUNK <= maxSamples)) {
       if (M5.Mic.record(&voiceAudioBuffer[voiceRecordedSamples], CHUNK, VOICE_SAMPLE_RATE)) {
         while (M5.Mic.isRecording()) delay(1);
 
@@ -5288,21 +5454,9 @@ void processVoiceAiScreen() {
 }
 
 void drawScreen() {
-  const bool portrait = (screen == Screen::MOUSE);
-
-  if (portrait) {
-    auto& display = M5.Display;
-    display.setRotation(0);
-    display.startWrite();
-    drawMouseScreen();
-    display.endWrite();
-    redraw = false;
-    return;
-  }
-
   // Double-Buffering Integral (Padrão Bruce / CatHack - 60 FPS sem Flicker / Tearing)
   ensureUiCanvas();
-  uiCanvas.setRotation(1);
+  uiCanvas.setRotation(0);
   uiCanvas.fillScreen(UI_BG);
 
   switch (screen) {
@@ -5343,12 +5497,12 @@ void drawScreen() {
     case Screen::VOICE_AI:       drawVoiceAiScreen(); break;
   }
 
-  if (screen != Screen::VOICE_AI && screen != Screen::SETTINGS_CLOCK) {
+  if (screen != Screen::VOICE_AI && screen != Screen::SETTINGS_CLOCK && screen != Screen::MOUSE) {
     drawFooter();
   }
 
   // Push Atômico do Quadro Inteiro para o ST7789 via DMA/SPI (Zero Flickering)
-  M5.Display.setRotation(1);
+  M5.Display.setRotation(3);
   uiCanvas.pushSprite(0, 0);
   redraw = false;
 }
@@ -5432,7 +5586,8 @@ void nextItem() {
   } else if (screen == Screen::TEAM_TRAIN_SELECT_HORSE) {
     normalizeTrainingCandidate(1);
   } else if (screen == Screen::TEAM_TRAIN_ACTIVE) {
-    trainingSession.currentHorse = (trainingSession.currentHorse + 1) % trainingSession.horseCount; saveTrainingSession();
+    const uint8_t hCount = max<uint8_t>(1, trainingSession.horseCount);
+    trainingSession.currentHorse = (trainingSession.currentHorse + 1) % hCount; saveTrainingSession();
   } else if (screen == Screen::TEAM_TRAIN_SUMMARY) {
     trainingSummaryHorse = (trainingSummaryHorse + 1) % max<uint8_t>(1, trainingHistory[0].horseCount);
   } else if (screen == Screen::TEAM_TRAIN_HISTORY_DETAIL) {
@@ -5477,7 +5632,8 @@ void previousItem() {
   } else if (screen == Screen::TEAM_TRAIN_SELECT_HORSE) {
     normalizeTrainingCandidate(-1);
   } else if (screen == Screen::TEAM_TRAIN_ACTIVE) {
-    trainingSession.currentHorse = (trainingSession.currentHorse + trainingSession.horseCount - 1) % trainingSession.horseCount; saveTrainingSession();
+    const uint8_t hCount = max<uint8_t>(1, trainingSession.horseCount);
+    trainingSession.currentHorse = (trainingSession.currentHorse + hCount - 1) % hCount; saveTrainingSession();
   } else if (screen == Screen::TEAM_TRAIN_SUMMARY) {
     trainingSummaryHorse = (trainingSummaryHorse + max<uint8_t>(1, trainingHistory[0].horseCount) - 1) % max<uint8_t>(1, trainingHistory[0].horseCount);
   } else if (screen == Screen::TEAM_TRAIN_HISTORY_DETAIL) {
@@ -5631,10 +5787,6 @@ void executeSelected() {
         screen = Screen::MOUSE;
         startBleMouse();
         resetMouseCalibration();
-        mouseCalibSamples = 0;
-        mouseSumGx = 0.0f;
-        mouseSumGy = 0.0f;
-        mouseSumGz = 0.0f;
         mouseSmoothDx = 0.0f;
         mouseSmoothDy = 0.0f;
       }
@@ -5816,7 +5968,7 @@ void executeSelected() {
 
     case Screen::TEAM_TRAIN_COUNT:
       trainingSetupSlot = 0; trainingSetupCandidate = 0;
-      while (trainingHorseAlreadyChosen(trainingSetupCandidate, trainingSetupSlot)) normalizeTrainingCandidate(1);
+      if (trainingHorseAlreadyChosen(trainingSetupCandidate, trainingSetupSlot)) normalizeTrainingCandidate(1);
       screen = Screen::TEAM_TRAIN_SELECT_HORSE;
       break;
 
@@ -5913,7 +6065,7 @@ void executeSelected() {
 
 void showBootIntro() {
   auto& d = M5.Display;
-  d.setRotation(1);
+  d.setRotation(3);
   d.fillScreen(UI_BG);
 
   // Vinheta sonora futurista de abertura (arpeggio ascendente não-bloqueante)
@@ -5981,7 +6133,7 @@ void setup() {
   }
   Serial.printf("[BOOT] IMU inicializado: enabled=%d, type=%d\n", M5.Imu.isEnabled(), (int)M5.Imu.getType());
   updateBatteryState(true);
-  M5.Display.setRotation(1);
+  M5.Display.setRotation(3);
   M5.Display.setBrightness(153);
   M5.Display.setTextFont(1);
   M5.Display.setTextWrap(false);
@@ -6025,14 +6177,13 @@ void setup() {
 }
 
 void loop() {
-  if (screen != Screen::MOUSE && screen != Screen::VOICE_AI) {
-    if (webServerRunning) webServer.handleClient();
-    processWifiConnection();
-    processWifiMaintenance();
-  }
+  if (webServerRunning) webServer.handleClient();
+  processWifiConnection();
+  processWifiMaintenance();
 
   M5.update();
   buttonC.update();
+  processVoiceTransport();
   updateBatteryState(false);
   if (screen != Screen::MOUSE && screen != Screen::VOICE_AI) processWeatherAndClock();
 
@@ -6069,8 +6220,8 @@ void loop() {
       resetMouseCalibration();
     }
     // Opening the screen or reconnecting with a button held must not click.
-    if (ready && mouseCalibrated && !M5.BtnA.isPressed() && !M5.BtnB.isPressed()) mouseButtonsArmed = true;
-    if (mouseButtonsArmed && ready && mouseCalibrated) {
+    if (ready && !M5.BtnA.isPressed() && !M5.BtnB.isPressed()) mouseButtonsArmed = true;
+    if (mouseButtonsArmed && ready) {
       if (M5.BtnA.wasPressed()) bleMouse.press(MOUSE_BUTTON_LEFT);
       if (M5.BtnA.wasReleased()) bleMouse.release(MOUSE_BUTTON_LEFT);
       if (M5.BtnB.wasPressed()) bleMouse.press(MOUSE_BUTTON_RIGHT);
@@ -6090,24 +6241,20 @@ void loop() {
           isfinite(gx) && isfinite(gy) && isfinite(gz)) {
         if (!mouseCalibrated) {
           const float gravity = ax*ax + ay*ay + az*az;
-          bool stable = gravity > 0.85f && gravity < 1.15f &&
-            fabsf(gx) < 5 && fabsf(gy) < 5 && fabsf(gz) < 5;
-          if (mouseCalibSamples > 0) stable = stable &&
-            fabsf(gx - mouseSumGx/mouseCalibSamples) < 0.8f &&
-            fabsf(gy - mouseSumGy/mouseCalibSamples) < 0.8f &&
-            fabsf(gz - mouseSumGz/mouseCalibSamples) < 0.8f;
-          if (!stable || M5.BtnA.isPressed() || M5.BtnB.isPressed() || buttonC.stablePressed) {
-            mouseCalibSamples = 0; mouseSumGx = mouseSumGy = mouseSumGz = 0;
-          } else {
-            mouseSumGx += gx; mouseSumGy += gy; mouseSumGz += gz;
-            if (++mouseCalibSamples >= 100) {
-              mouseBiasGx = mouseSumGx / mouseCalibSamples;
-              mouseBiasGy = mouseSumGy / mouseCalibSamples;
-              mouseBiasGz = mouseSumGz / mouseCalibSamples;
-              mouseCalibrated = true;
-              redraw = true;
-              Serial.println("[AIR-MOUSE] Repouso calibrado; pronto.");
-            }
+          mouseCalibration.add(gx, gy, gz, gravity);
+          if (now - mouseUiAt >= 50) {
+            mouseUiAt = now;
+            int w = (100 * mouseCalibration.count) / MouseCalibration::target;
+            M5.Display.fillRect(17, 72, w, 4, UI_SELECTED);
+            M5.Display.fillRect(17 + w, 72, 100 - w, 4, UI_BORDER);
+          }
+          if (mouseCalibration.ready) {
+            mouseBiasGx = mouseCalibration.mean[0];
+            mouseBiasGy = mouseCalibration.mean[1];
+            mouseBiasGz = mouseCalibration.mean[2];
+            mouseCalibrated = true;
+            redraw = true;
+            Serial.println("[AIR-MOUSE] Repouso calibrado; pronto.");
           }
         } else {
           // Fixed axes avoid the old accelerometer-dependent steering changes.
@@ -6236,15 +6383,15 @@ void loop() {
     delay(250);
     M5.Power.powerOff();
   } else if (buttonC.wasClicked()) {
-    if (screen == Screen::TEAM_TRAIN_COUNT || screen == Screen::TEAM_TRAIN_SELECT_HORSE || screen == Screen::TEAM_CATTLE_LIMIT || screen == Screen::TEAM_TRAIN_SUMMARY || screen == Screen::TEAM_TRAIN_HISTORY_DETAIL) {
-      goBack();
-    } else {
+    if (screen == Screen::MAIN) {
       previousItem();
+    } else {
+      goBack();
     }
   }
 
   static bool toastWasVisible = false;
-  const bool toastVisible = toast.length() && millis() < toastUntil;
+  const bool toastVisible = isToastActive();
 
   if (toastWasVisible && !toastVisible) {
     redraw = true;
@@ -6309,7 +6456,20 @@ bool requestWifiScan(bool forMenu, bool forAuto) {
 void processWifiScan() {
   if (!wifiScanRunning) return;
   const int found = WiFi.scanComplete();
-  if (found == WIFI_SCAN_RUNNING) return;
+  if (found == WIFI_SCAN_RUNNING) {
+    if (millis() - wifiScanStartedAt >= 10000UL) {
+      Serial.println("[WIFI] Scan timeout apos 10s - abortando scan");
+      WiFi.scanDelete();
+      wifiScanRunning = false;
+      wifiScanHasResults = true;
+      if (wifiScanForMenu && screen == Screen::WIFI_SCANNING) {
+        showToast("TIMEOUT NO SCAN", 1200);
+        screen = Screen::WIFI_MENU;
+        redraw = true;
+      }
+    }
+    return;
+  }
   wifiScanRunning = false;
   wifiScanHasResults = true;
   scannedNetworkCount = 0;

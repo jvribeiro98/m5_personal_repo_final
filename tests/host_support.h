@@ -1,14 +1,21 @@
 #pragma once
 int savedWrites=0;
 int emittedDevice=-1;
+int acStateSends=0;
 int drawnBottom=0;
+FakeDisplay uiCanvas;
+FakeDisplay& getGfx(){return uiCanvas;}
+bool syncClockFromInternet(int32_t){return true;}
+void processDeviceSerial(){}
+void processVoiceTransport(){}
+void updateBatteryState(bool){}
 void showToast(const String&,uint16_t=900){}
 void saveAcState(uint8_t){}
 void applySamsungState(const AcState&){}
 void applyMideaState(const AcState&){}
 void applyCoolixState(const AcState&){}
 void sendTvCommand(TvCommand){emittedDevice=activeTv;}
-void sendAcState(const String&){emittedDevice=activeAc;}
+void sendAcState(const String&){emittedDevice=activeAc;acStateSends++;}
 void cycleAcMode(){}
 void cycleAcFan(){}
 void toggleAcSwing(){}

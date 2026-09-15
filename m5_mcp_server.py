@@ -1,547 +1,281 @@
 # -*- coding: utf-8 -*-
-"""
-M5StickC Plus 2 - Servidor MCP Oficial (Model Context Protocol) v1.0
-Exposição de Hardware e Ações Físicas para Agentes de IA:
-- Controle de Ar-Condicionado Samsung (Power, Temperatura, Modo) via IR no GPIO 19
-- Controle de TV Samsung (Power, Volume, Mudo) via IR no GPIO 19
-- Telemetria em tempo real (Nível de Bateria, Tensão, IP, Sinal Wi-Fi)
-- Exibição de Mensagens e Notificações no Visor TFT 240x135
-- Sinal Sonoro no Buzzer
-- Suporte a Transporte Stdio JSON-RPC 2.0 (Padrão Antigravity, Claude, Cursor, Codex)
-"""
-
-import sys
-import os
+"""MCP stdio tools. Configure M5_DEVICE_IP or M5_IP_CACHE_FILE; no serial access."""
+import ipaddress
 import json
+import os
+import sys
 import time
-import urllib.request
 import urllib.parse
-import concurrent.futures
+import urllib.request
 
-try:
-    sys.stdout.reconfigure(line_buffering=True, encoding='utf-8')
-    sys.stdin.reconfigure(encoding='utf-8')
-except Exception:
-    pass
+IP_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'm5_device_ip.json')
+PROTOCOL_VERSIONS = ('2024-11-05', '2025-03-26', '2025-06-18')
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-IP_CACHE_FILE = os.path.join(BASE_DIR, "m5_device_ip.json")
 
-def log_debug(msg):
-    """Escreve logs em stderr para nunca poluir o canal JSON-RPC no stdout."""
-    sys.stderr.write(f"[M5-MCP] {msg}\n")
-    sys.stderr.flush()
+def log_debug(message):
+    print(f'[M5-MCP] {message}', file=sys.stderr, flush=True)
+
+
+def _device_ip(value):
+    if not isinstance(value, str):
+        raise ValueError('M5_DEVICE_IP deve ser um endereço IPv4.')
+    address = ipaddress.IPv4Address(value.strip())
+    if address.is_unspecified or address.is_multicast or str(address) == '255.255.255.255':
+        raise ValueError('M5_DEVICE_IP deve identificar um dispositivo.')
+    return str(address)
+
 
 def get_cached_ip():
-    """Lê o último IP conhecido do M5Stick."""
     try:
-        if os.path.exists(IP_CACHE_FILE):
-            with open(IP_CACHE_FILE, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                return data.get("ip")
-    except Exception:
-        pass
-    return None
+        with open(os.environ.get('M5_IP_CACHE_FILE', IP_CACHE_FILE), encoding='utf-8') as source:
+            return _device_ip(json.load(source).get('ip'))
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
 
-def save_cached_ip(ip):
-    """Salva o IP conhecido do M5Stick no cache local."""
-    try:
-        with open(IP_CACHE_FILE, 'w', encoding='utf-8') as f:
-            json.dump({"ip": ip, "timestamp": time.time()}, f, indent=2)
-    except Exception as e:
-        log_debug(f"Falha ao salvar cache de IP: {e}")
-
-def verify_ip(ip, timeout=0.8):
-    """Testa se o IP informado responde como M5StickC Plus 2."""
-    if not ip:
-        return False
-    url = f"http://{ip}/api/status"
-    try:
-        req = urllib.request.Request(url, headers={'User-Agent': 'M5-MCP-Server'})
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.loads(resp.read().decode('utf-8', errors='ignore'))
-            return data.get("ok") is True
-    except Exception:
-        return False
-
-def scan_lan_for_m5():
-    """Varre a sub-rede local em busca do WebServer do M5Stick."""
-    log_debug("Varrendo sub-rede local para auto-descoberta do M5Stick...")
-    subnets = ["192.168.0", "192.168.1"]
-
-    def probe(host):
-        url = f"http://{host}/api/status"
-        try:
-            req = urllib.request.Request(url, headers={'User-Agent': 'M5-MCP-Scanner'})
-            with urllib.request.urlopen(req, timeout=0.35) as resp:
-                data = json.loads(resp.read().decode('utf-8', errors='ignore'))
-                if data.get("ok") is True:
-                    return host
-        except Exception:
-            return None
-
-    for sub in subnets:
-        hosts = [f"{sub}.{i}" for i in range(1, 255)]
-        with concurrent.futures.ThreadPoolExecutor(max_workers=60) as ex:
-            futures = [ex.submit(probe, h) for h in hosts]
-            for f in concurrent.futures.as_completed(futures):
-                res = f.result()
-                if res:
-                    log_debug(f"M5Stick encontrado com sucesso em {res}!")
-                    save_cached_ip(res)
-                    return res
-    return None
 
 def resolve_m5_ip():
-    """Resolve o IP ativo do M5Stick com cache e fallback para varredura."""
+    configured = os.environ.get('M5_DEVICE_IP', '').strip()
+    if configured:
+        return _device_ip(configured)
     cached = get_cached_ip()
-    if cached and verify_ip(cached):
+    if cached:
         return cached
+    raise RuntimeError('IP do M5 desconhecido. Configure M5_DEVICE_IP ou M5_IP_CACHE_FILE.')
 
-    # Tenta o IP padrão mais comum
-    default_ips = ["192.168.0.40", "192.168.0.50", "192.168.0.100"]
-    for d_ip in default_ips:
-        if verify_ip(d_ip, timeout=0.4):
-            save_cached_ip(d_ip)
-            return d_ip
 
-    found = scan_lan_for_m5()
-    if found:
-        return found
+def _http_request(endpoint, params=None, method='GET'):
+    ip = resolve_m5_ip()
+    timeout = float(os.environ.get('M5_HTTP_TIMEOUT', '5'))
+    if not 0 < timeout <= 30:
+        raise ValueError('M5_HTTP_TIMEOUT deve estar entre 0 e 30 segundos.')
+    query = urllib.parse.urlencode(params or {})
+    url = f'http://{ip}{endpoint}' + (('?' + query) if query else '')
+    request = urllib.request.Request(url, data=b'' if method == 'POST' else None,
+                                     method=method, headers={'User-Agent': 'M5-MCP'})
+    # Never retry a POST: an absent response does not mean no IR was emitted.
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        raw = response.read(65537)
+    if len(raw) > 65536:
+        raise RuntimeError('Resposta do M5 excedeu o limite de tamanho.')
+    data = json.loads(raw.decode('utf-8'))
+    if not isinstance(data, dict) or data.get('ok') is not True:
+        message = data.get('message', 'Resposta inválida do M5') if isinstance(data, dict) else 'Resposta inválida do M5'
+        raise RuntimeError(str(message))
+    return data
 
-    return cached or "192.168.0.40"
 
 def send_http_get(endpoint):
-    """Executa requisição GET ao M5Stick."""
-    ip = resolve_m5_ip()
-    url = f"http://{ip}{endpoint}"
-    req = urllib.request.Request(url, headers={'User-Agent': 'M5-MCP'})
-    with urllib.request.urlopen(req, timeout=2.5) as resp:
-        return json.loads(resp.read().decode('utf-8', errors='ignore'))
+    return _http_request(endpoint)
+
 
 def send_http_post(endpoint, params=None):
-    """Executa requisição POST ao M5Stick."""
-    ip = resolve_m5_ip()
-    qs = urllib.parse.urlencode(params or {})
-    url = f"http://{ip}{endpoint}?{qs}" if qs else f"http://{ip}{endpoint}"
-    req = urllib.request.Request(url, data=b"", method='POST', headers={'User-Agent': 'M5-MCP'})
-    with urllib.request.urlopen(req, timeout=2.5) as resp:
-        return json.loads(resp.read().decode('utf-8', errors='ignore'))
+    return _http_request(endpoint, params, 'POST')
 
-# ============================================================
-# IMPLEMENTAÇÃO DAS FERRAMENTAS DO M5STICK
-# ============================================================
 
 def tool_ac_power(args):
-    action = args.get("action", "toggle").lower()
-    # Verifica estado atual
-    try:
-        current = send_http_get("/api/ir/ac/state?device=0")
-        is_on = current.get("power", False)
-        current_temp = current.get("temp", 23)
-    except Exception:
-        is_on = None
-        current_temp = "?"
+    action = args.get('action', 'toggle')
+    params = {'device': '0'}
+    params.update({'action': '7'} if action == 'toggle' else {'power': action})
+    result = send_http_post('/api/ir/ac', params)
+    if type(result.get('power')) is not bool:
+        raise RuntimeError('O M5 não informou o estado de energia após o comando.')
+    state = 'LIGADO' if result['power'] else 'DESLIGADO'
+    return f'Comando IR do ar enviado. Estado configurado: {state} ({result.get("temp", "?")}°C).'
 
-    if action == "on" and is_on is True:
-        return f"O Ar-Condicionado Samsung já está ligado (Temperatura: {current_temp}°C)."
-    if action == "off" and is_on is False:
-        return "O Ar-Condicionado Samsung já está desligado."
-
-    # Dispara Power Toggle (action 7)
-    res = send_http_post("/api/ir/ac", {"device": "0", "action": "7"})
-    new_power = res.get("power", not is_on if is_on is not None else True)
-    status_str = "LIGADO" if new_power else "DESLIGADO"
-    return f"Ar-Condicionado Samsung {status_str} via IR (GPIO 19) no M5Stick! (Temp: {res.get('temp', current_temp)}°C, Modo: {res.get('mode', 'FRIO')})"
 
 def tool_ac_set_temp(args):
-    target_celsius = args.get("target_celsius")
-    direction = args.get("direction")
-    steps = int(args.get("steps", 1))
+    if 'target_celsius' in args:
+        target = args['target_celsius']
+        result = send_http_post('/api/ir/ac', {'device': '0', 'temp': str(target)})
+        if result.get('temp') != target:
+            raise RuntimeError('O M5 não confirmou a temperatura solicitada.')
+    else:
+        action = '1' if args['direction'] == 'up' else '0'
+        steps = args.get('steps', 1)
+        for index in range(steps):
+            result = send_http_post('/api/ir/ac', {'device': '0', 'action': action})
+            if index + 1 < steps:
+                time.sleep(0.15)
+    return f'Comando IR enviado. Temperatura configurada no M5: {result.get("temp", "?")}°C.'
 
-    if target_celsius is not None:
-        try:
-            current = send_http_get("/api/ir/ac/state?device=0")
-            cur_temp = int(current.get("temp", 23))
-        except Exception:
-            cur_temp = 23
-
-        diff = int(target_celsius) - cur_temp
-        if diff == 0:
-            return f"O Ar-Condicionado já está configurado na temperatura desejada ({target_celsius}°C)."
-        
-        dir_code = "1" if diff > 0 else "0"  # 1 = UP, 0 = DOWN
-        total_steps = abs(diff)
-        for _ in range(total_steps):
-            send_http_post("/api/ir/ac", {"device": "0", "action": dir_code})
-            time.sleep(0.15)
-        
-        return f"Temperatura do Ar-Condicionado Samsung ajustada para {target_celsius}°C ({total_steps} passos via IR GPIO 19)!"
-
-    elif direction:
-        dir_code = "1" if direction.lower() in ["up", "aumentar", "+"] else "0"
-        for _ in range(steps):
-            res = send_http_post("/api/ir/ac", {"device": "0", "action": dir_code})
-            time.sleep(0.15)
-        new_temp = res.get("temp", "ajustada")
-        label = f"+{steps}°C" if dir_code == "1" else f"-{steps}°C"
-        return f"Temperatura do Ar-Condicionado Samsung alterada ({label}) para {new_temp}°C via IR no M5Stick!"
-
-    return "Informe 'target_celsius' (ex: 22) ou 'direction' ('up'/'down')."
 
 def tool_tv_power(args):
-    res = send_http_post("/api/ir/tv", {"device": "0", "cmd": "0"})
-    return "Comando Power da TV Samsung disparado via IR (GPIO 19) pelo M5Stick!"
+    send_http_post('/api/ir/tv', {'device': '0', 'cmd': '0'})
+    return 'Comando de alternar energia da TV Samsung enviado pelo M5.'
+
 
 def tool_tv_volume(args):
-    action = args.get("action", "up").lower()
-    steps = int(args.get("steps", 1))
+    action = args['action']
+    command = {'mute': '1', 'up': '2', 'down': '3'}[action]
+    steps = 1 if action == 'mute' else args.get('steps', 1)
+    for index in range(steps):
+        send_http_post('/api/ir/tv', {'device': '0', 'cmd': command})
+        if index + 1 < steps:
+            time.sleep(0.12)
+    return f'Comando de volume da TV enviado: {action}, {steps} passo(s).'
 
-    if action == "mute":
-        send_http_post("/api/ir/tv", {"device": "0", "cmd": "1"})
-        return "Mudo da TV Samsung acionado via IR no M5Stick!"
-    elif action in ["up", "aumentar", "+"]:
-        for _ in range(steps):
-            send_http_post("/api/ir/tv", {"device": "0", "cmd": "2"})
-            time.sleep(0.12)
-        return f"Volume da TV Samsung aumentado (+{steps}) via IR no M5Stick!"
-    elif action in ["down", "diminuir", "-"]:
-        for _ in range(steps):
-            send_http_post("/api/ir/tv", {"device": "0", "cmd": "3"})
-            time.sleep(0.12)
-        return f"Volume da TV Samsung reduzido (-{steps}) via IR no M5Stick!"
-    return "Ação inválida. Use 'up', 'down' ou 'mute'."
 
 def tool_display_message(args):
-    title = args.get("title", "NOTIFICACAO")[:20]
-    body = args.get("body", "")
-    ip = resolve_m5_ip()
+    send_http_post('/api/notify', {'title': args['title'], 'body': args['body']})
+    return f'Mensagem aceita pelo M5: [{args["title"]}] {args["body"]}'
 
-    # Tenta enviar via HTTP para o M5Stick
-    try:
-        url = f"http://{ip}/api/notify?title={urllib.parse.quote(title)}&body={urllib.parse.quote(body)}"
-        req = urllib.request.Request(url, data=b"", method='POST', headers={'User-Agent': 'M5-MCP'})
-        with urllib.request.urlopen(req, timeout=1.5) as resp:
-            return f"Mensagem visual exibida na tela do M5Stick: [{title}] {body}"
-    except Exception:
-        pass
-
-    # Fallback via ponte serial se disponível
-    try:
-        bridge_url = "http://localhost:5000/audio"
-        # Bridge responde em 5000
-    except Exception:
-        pass
-
-    return f"Cartão enviado para o M5Stick: '{title} - {body}' (IP: {ip})"
 
 def tool_beep(args):
-    freq = int(args.get("frequency", 1500))
-    dur = int(args.get("duration_ms", 200))
-    ip = resolve_m5_ip()
-    try:
-        url = f"http://{ip}/api/beep?freq={freq}&dur={dur}"
-        req = urllib.request.Request(url, data=b"", method='POST', headers={'User-Agent': 'M5-MCP'})
-        with urllib.request.urlopen(req, timeout=1.5) as resp:
-            return f"Sinal sonoro executado no buzzer do M5Stick ({freq}Hz, {dur}ms)!"
-    except Exception:
-        pass
-    return f"Bipe acionado no M5Stick ({freq}Hz, {dur}ms)!"
+    frequency, duration = args.get('frequency', 1500), args.get('duration_ms', 200)
+    send_http_post('/api/beep', {'freq': frequency, 'dur': duration})
+    return f'Sinal sonoro aceito pelo M5 ({frequency}Hz, {duration}ms).'
+
 
 def tool_get_status(args):
     ip = resolve_m5_ip()
-    try:
-        sys_state = send_http_get("/api/system/state")
-    except Exception as e:
-        sys_state = {"error": str(e)}
+    system = send_http_get('/api/system/state')
+    wifi = send_http_get('/api/status')
+    ac = send_http_get('/api/ir/ac/state?device=0')
+    power = {True: 'LIGADO', False: 'DESLIGADO'}.get(ac.get('power'), 'DESCONHECIDO')
+    temperature = system.get('temperature')
+    return (f'[M5StickC Plus 2]\nIP: {ip}\nWi-Fi: {wifi.get("message", "N/A")}\n'
+            f'Bateria: {system.get("battery", "N/A")}%\nHora: {system.get("time", "N/A")}\n'
+            f'Temperatura externa (clima): {temperature if temperature is not None else "N/A"}°C\n'
+            f'Ar Samsung, estado configurado: {power} ({ac.get("temp", "N/A")}°C)')
 
-    try:
-        wifi_state = send_http_get("/api/status")
-    except Exception:
-        wifi_state = {}
 
-    try:
-        ac_state = send_http_get("/api/ir/ac/state?device=0")
-    except Exception:
-        ac_state = {}
+def _tool(name, description, properties, required=()):
+    schema = {'type': 'object', 'properties': properties, 'additionalProperties': False}
+    if required:
+        schema['required'] = list(required)
+    return {'name': name, 'description': description, 'inputSchema': schema}
 
-    bat = sys_state.get("battery", "N/A")
-    temp_env = sys_state.get("temperature", "N/A")
-    m5_time = sys_state.get("time", "N/A")
-    ssid = wifi_state.get("message", "Conectado")
-    ac_power = "LIGADO" if ac_state.get("power") else "DESLIGADO"
-    ac_temp = ac_state.get("temp", "N/A")
-
-    status_text = (
-        f"[Status M5StickC Plus 2]\n"
-        f"- IP na Rede: {ip}\n"
-        f"- Wi-Fi: {ssid}\n"
-        f"- Nivel de Bateria: {bat}%\n"
-        f"- Hora no Dispositivo: {m5_time}\n"
-        f"- Temperatura Ambiente M5: {temp_env} C\n"
-        f"- Ar-Condicionado Samsung: {ac_power} ({ac_temp} C)\n"
-        f"- Hardware IR: Ativo no GPIO 19"
-    )
-    return status_text
-
-# ============================================================
-# DEFINIÇÃO DOS SCHEMAS DAS FERRAMENTAS MCP
-# ============================================================
 
 MCP_TOOLS = [
-    {
-        "name": "m5_ac_power",
-        "description": "Ligar ou desligar o ar-condicionado Samsung no quarto usando o emissor de infravermelho físico (GPIO 19) do M5StickC Plus 2 via Wi-Fi.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "action": {
-                    "type": "string",
-                    "enum": ["toggle", "on", "off"],
-                    "description": "Ação desejada: 'toggle' (alternar), 'on' (garantir ligado), ou 'off' (garantir desligado)."
-                }
-            }
-        }
-    },
-    {
-        "name": "m5_ac_set_temp",
-        "description": "Definir ou ajustar a temperatura do ar-condicionado Samsung usando o hardware IR do M5StickC Plus 2.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "target_celsius": {
-                    "type": "integer",
-                    "description": "Temperatura exata desejada em graus Celsius (ex: 20, 22, 24)."
-                },
-                "direction": {
-                    "type": "string",
-                    "enum": ["up", "down"],
-                    "description": "Ajuste relativo: 'up' (aumentar) ou 'down' (diminuir)."
-                },
-                "steps": {
-                    "type": "integer",
-                    "description": "Quantidade de graus no ajuste relativo (padrão: 1)."
-                }
-            }
-        }
-    },
-    {
-        "name": "m5_tv_power",
-        "description": "Ligar ou desligar a televisão Samsung usando o emissor infravermelho físico (GPIO 19) do M5StickC Plus 2.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {}
-        }
-    },
-    {
-        "name": "m5_tv_volume",
-        "description": "Aumentar, diminuir ou mutar o volume da televisão Samsung via emissor infravermelho (GPIO 19) do M5StickC Plus 2.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "action": {
-                    "type": "string",
-                    "enum": ["up", "down", "mute"],
-                    "description": "Ação: 'up' (aumentar), 'down' (diminuir) ou 'mute' (mudo)."
-                },
-                "steps": {
-                    "type": "integer",
-                    "description": "Quantidade de passos para subir ou descer (padrão: 1)."
-                }
-            },
-            "required": ["action"]
-        }
-    },
-    {
-        "name": "m5_display_message",
-        "description": "Enviar e exibir uma mensagem de notificação visual na tela TFT 240x135 do M5StickC Plus 2.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "title": {
-                    "type": "string",
-                    "description": "Título curto do aviso (máximo 20 caracteres)."
-                },
-                "body": {
-                    "type": "string",
-                    "description": "Texto completo da mensagem para leitura no visor."
-                }
-            },
-            "required": ["title", "body"]
-        }
-    },
-    {
-        "name": "m5_beep",
-        "description": "Emitir um sinal sonoro no buzzer do M5StickC Plus 2 para chamar a atenção do usuário.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "frequency": {
-                    "type": "integer",
-                    "description": "Frequência do tom em Hz (padrão: 1500)."
-                },
-                "duration_ms": {
-                    "type": "integer",
-                    "description": "Duração do som em milissegundos (padrão: 200)."
-                }
-            }
-        }
-    },
-    {
-        "name": "m5_get_status",
-        "description": "Consultar o estado atual do M5StickC Plus 2: porcentagem de bateria, tensão, IP na rede Wi-Fi, sinal e estado do ar-condicionado.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {}
-        }
-    }
+    _tool('m5_ac_power', 'Configurar energia do ar Samsung via IR. Estado estimado pelo M5, sem confirmação física.', {
+        'action': {'type': 'string', 'enum': ['toggle', 'on', 'off'], 'default': 'toggle'}}),
+    _tool('m5_ac_set_temp', 'Configurar temperatura do ar. Informe target_celsius OU direction; steps é relativo.', {
+        'target_celsius': {'type': 'integer', 'minimum': 17, 'maximum': 30},
+        'direction': {'type': 'string', 'enum': ['up', 'down']},
+        'steps': {'type': 'integer', 'minimum': 1, 'maximum': 13, 'default': 1}}),
+    _tool('m5_tv_power', 'Alternar energia da TV Samsung. Repetir inverte a energia novamente.', {}),
+    _tool('m5_tv_volume', 'Ajustar volume da TV Samsung via IR.', {
+        'action': {'type': 'string', 'enum': ['up', 'down', 'mute']},
+        'steps': {'type': 'integer', 'minimum': 1, 'maximum': 20, 'default': 1}}, ['action']),
+    _tool('m5_display_message', 'Exibir uma notificação no M5.', {
+        'title': {'type': 'string', 'minLength': 1, 'maxLength': 20},
+        'body': {'type': 'string', 'maxLength': 500}}, ['title', 'body']),
+    _tool('m5_beep', 'Emitir sinal sonoro no M5.', {
+        'frequency': {'type': 'integer', 'minimum': 20, 'maximum': 20000, 'default': 1500},
+        'duration_ms': {'type': 'integer', 'minimum': 1, 'maximum': 5000, 'default': 200}}),
+    _tool('m5_get_status', 'Consultar bateria, Wi-Fi, horário, clima e estado configurado do ar.', {}),
 ]
-
+MCP_TOOLS[1]['inputSchema']['oneOf'] = [
+    {'required': ['target_celsius'], 'not': {'anyOf': [{'required': ['direction']}, {'required': ['steps']}]}},
+    {'required': ['direction'], 'not': {'required': ['target_celsius']}},
+]
 TOOL_DISPATCH = {
-    "m5_ac_power": tool_ac_power,
-    "m5_ac_set_temp": tool_ac_set_temp,
-    "m5_tv_power": tool_tv_power,
-    "m5_tv_volume": tool_tv_volume,
-    "m5_display_message": tool_display_message,
-    "m5_beep": tool_beep,
-    "m5_get_status": tool_get_status
+    'm5_ac_power': tool_ac_power, 'm5_ac_set_temp': tool_ac_set_temp,
+    'm5_tv_power': tool_tv_power, 'm5_tv_volume': tool_tv_volume,
+    'm5_display_message': tool_display_message, 'm5_beep': tool_beep,
+    'm5_get_status': tool_get_status,
 }
 
-# ============================================================
-# LOOP DO PROTOCOLO MCP (STDIO JSON-RPC 2.0)
-# ============================================================
 
-def send_response(response_dict):
-    """Envia uma mensagem JSON-RPC para stdout com flush imediato."""
-    out_str = json.dumps(response_dict, ensure_ascii=False)
-    sys.stdout.write(out_str + "\n")
-    sys.stdout.flush()
+def validate_tool_args(name, args):
+    if not isinstance(args, dict):
+        raise ValueError('arguments deve ser um objeto JSON.')
+    schema = next(tool['inputSchema'] for tool in MCP_TOOLS if tool['name'] == name)
+    properties = schema['properties']
+    if set(args) - set(properties):
+        raise ValueError('Argumento desconhecido.')
+    for required in schema.get('required', []):
+        if required not in args:
+            raise ValueError(f'Argumento obrigatório: {required}.')
+    for key, value in args.items():
+        prop = properties[key]
+        if prop['type'] == 'integer':
+            if type(value) is not int or not prop['minimum'] <= value <= prop['maximum']:
+                raise ValueError(f'{key} deve ser inteiro entre {prop["minimum"]} e {prop["maximum"]}.')
+        elif not isinstance(value, str):
+            raise ValueError(f'{key} deve ser texto.')
+        elif len(value) < prop.get('minLength', 0) or len(value) > prop.get('maxLength', 10000):
+            raise ValueError(f'Tamanho inválido para {key}.')
+        if 'enum' in prop and value not in prop['enum']:
+            raise ValueError(f'Valor inválido para {key}.')
+    if name == 'm5_ac_set_temp':
+        absolute, relative = 'target_celsius' in args, 'direction' in args
+        if absolute == relative or (absolute and 'steps' in args):
+            raise ValueError('Informe target_celsius OU direction (com steps opcional).')
+
+
+def _error(req_id, code, message):
+    return {'jsonrpc': '2.0', 'id': req_id, 'error': {'code': code, 'message': message}}
+
+
+def _result(req_id, result):
+    return {'jsonrpc': '2.0', 'id': req_id, 'result': result}
+
 
 def handle_request(req):
-    req_id = req.get("id")
-    method = req.get("method")
-    params = req.get("params", {})
-
-    log_debug(f"Processando requisição: method='{method}', id={req_id}")
-
-    if method == "initialize":
-        return {
-            "jsonrpc": "2.0",
-            "id": req_id,
-            "result": {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {
-                    "tools": {}
-                },
-                "serverInfo": {
-                    "name": "m5stick-mcp",
-                    "version": "1.0.0"
-                }
-            }
-        }
-
-    elif method == "notifications/initialized":
-        log_debug("Cliente inicializado com sucesso!")
+    if not isinstance(req, dict) or req.get('jsonrpc') != '2.0' or not isinstance(req.get('method'), str):
+        return _error(None, -32600, 'Invalid Request')
+    if 'id' not in req:
         return None
-
-    elif method == "ping":
-        return {
-            "jsonrpc": "2.0",
-            "id": req_id,
-            "result": {}
-        }
-
-    elif method == "tools/list":
-        return {
-            "jsonrpc": "2.0",
-            "id": req_id,
-            "result": {
-                "tools": MCP_TOOLS
-            }
-        }
-
-    elif method == "tools/call":
-        tool_name = params.get("name")
-        tool_args = params.get("arguments", {})
-
-        handler = TOOL_DISPATCH.get(tool_name)
-        if not handler:
-            return {
-                "jsonrpc": "2.0",
-                "id": req_id,
-                "error": {
-                    "code": -32601,
-                    "message": f"Ferramenta desconhecida: '{tool_name}'"
-                }
-            }
-
+    req_id = req['id']
+    if type(req_id) not in (str, int) or (isinstance(req_id, str) and not req_id):
+        return _error(None, -32600, 'Invalid request ID')
+    method, params = req['method'], req.get('params', {})
+    if not isinstance(params, dict):
+        return _error(req_id, -32602, 'params deve ser um objeto JSON.')
+    if method == 'initialize':
+        requested = params.get('protocolVersion')
+        version = requested if requested in PROTOCOL_VERSIONS else PROTOCOL_VERSIONS[0]
+        return _result(req_id, {'protocolVersion': version, 'capabilities': {'tools': {}},
+                               'serverInfo': {'name': 'm5stick-mcp', 'version': '1.1.0'}})
+    if method == 'ping':
+        return _result(req_id, {})
+    if method == 'tools/list':
+        return _result(req_id, {'tools': MCP_TOOLS})
+    if method == 'tools/call':
+        name = params.get('name')
+        if not isinstance(name, str) or name not in TOOL_DISPATCH:
+            return _error(req_id, -32602, 'Ferramenta desconhecida.')
+        args = params.get('arguments', {})
         try:
-            log_debug(f"Executando ferramenta '{tool_name}' com args: {tool_args}")
-            result_text = handler(tool_args)
-            return {
-                "jsonrpc": "2.0",
-                "id": req_id,
-                "result": {
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": str(result_text)
-                        }
-                    ],
-                    "isError": False
-                }
-            }
-        except Exception as e:
-            log_debug(f"Erro ao executar '{tool_name}': {e}")
-            return {
-                "jsonrpc": "2.0",
-                "id": req_id,
-                "result": {
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": f"Erro na execução da ferramenta: {str(e)}"
-                        }
-                    ],
-                    "isError": True
-                }
-            }
+            validate_tool_args(name, args)
+        except ValueError as error:
+            return _error(req_id, -32602, str(error))
+        try:
+            text, failed = TOOL_DISPATCH[name](args), False
+        except Exception as error:
+            log_debug(f'Falha em {name}: {error}')
+            text, failed = f'Falha na ferramenta: {error}', True
+        return _result(req_id, {'content': [{'type': 'text', 'text': str(text)}], 'isError': failed})
+    return _error(req_id, -32601, f'Método desconhecido: {method}')
 
-    else:
-        log_debug(f"Método não suportado: {method}")
-        if req_id is not None:
-            return {
-                "jsonrpc": "2.0",
-                "id": req_id,
-                "error": {
-                    "code": -32601,
-                    "message": f"Método não encontrado: '{method}'"
-                }
-            }
-        return None
+
+def send_response(response_dict):
+    sys.stdout.write(json.dumps(response_dict, ensure_ascii=False, separators=(',', ':')) + '\n')
+    sys.stdout.flush()
+
 
 def main():
-    log_debug("Servidor MCP M5Stick iniciado via Stdio JSON-RPC 2.0...")
-    # Tenta aquecer o cache de IP
-    try:
-        ip = resolve_m5_ip()
-        log_debug(f"IP ativo do M5Stick resolvido: {ip}")
-    except Exception as e:
-        log_debug(f"Aviso de resolução inicial de IP: {e}")
-
+    for stream in (sys.stdin, sys.stdout):
+        if hasattr(stream, 'reconfigure'):
+            stream.reconfigure(encoding='utf-8')
+    log_debug('Servidor MCP iniciado em stdio; hardware consultado sob demanda.')
     for line in sys.stdin:
-        line_clean = line.strip()
-        if not line_clean:
+        if not line.strip():
             continue
         try:
-            req = json.loads(line_clean)
-            resp = handle_request(req)
-            if resp is not None:
-                send_response(resp)
-        except json.JSONDecodeError as err:
-            log_debug(f"Erro ao decodificar JSON: {err} -> Linha: '{line_clean}'")
-        except Exception as err:
-            log_debug(f"Erro inesperado no loop principal: {err}")
+            request = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            send_response(_error(None, -32700, 'Parse error'))
+            continue
+        try:
+            response = handle_request(request)
+        except Exception as error:
+            log_debug(f'Erro inesperado: {error}')
+            response = _error(request.get('id') if isinstance(request, dict) else None, -32603, 'Internal error')
+        if response is not None:
+            send_response(response)
+
 
 if __name__ == '__main__':
     main()

@@ -30,7 +30,7 @@ struct WebServer {
   int status=0;
   String body;
   bool hasArg(const char* key) { return args.count(key); }
-  String arg(const char* key) { return args[key]; }
+  String arg(const char* key) { auto found=args.find(key); return found==args.end()?String():found->second; }
   void send(int s,const char*,const String& b) {status=s;body=b;}
   void sendHeader(const char*,const char*) {}
   void handleClient(){}
@@ -83,6 +83,7 @@ struct FakeDisplay {
  template<class... A>void drawString(A...){}
  template<class... A>void fillRect(A...){}
  template<class... A>void drawRect(A...){}
+ template<class... A>void pushSprite(A...){}
 };
 struct FakeButton{bool clicked=false;bool wasHold(){return false;}bool wasClicked(){return clicked;}};
 struct {FakeDisplay Display;FakeButton BtnA{true},BtnB{false};void update(){}} M5;

@@ -6,8 +6,10 @@
   <meta name="theme-color" content="#0b1020">
   <title>M5 Personal — Instalar firmware</title>
   <script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js"></script>
+  <script defer src="installer.js"></script>
   <style>
     :root { color-scheme: dark; font-family: system-ui, sans-serif; }
+    * { box-sizing: border-box; }
     body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #080b12; color: #f8fafc; }
     main { width: min(92vw, 540px); padding: 30px; border: 1px solid #283247; border-radius: 20px; background: #111827; box-shadow: 0 24px 70px #0008; }
     h1 { margin: 0 0 8px; }
@@ -15,41 +17,51 @@
     button { width: 100%; padding: 16px; border: 0; border-radius: 12px; font-weight: 800; font-size: 1rem; background: #22c55e; color: #052e16; cursor: pointer; }
     .meta { margin-top: 18px; font-size: .88rem; color: #94a3b8; }
     .version { color: #facc15; font-weight: 700; }
+    button:disabled { opacity: .5; cursor: wait; }
+    :focus-visible { outline: 3px solid #facc15; outline-offset: 4px; }
+    .status { margin: 22px 0 16px; padding: 14px; border: 1px solid #475569; border-radius: 12px; }
+    .status p { margin: 0; }
+    .secondary { background: #273449; color: #f8fafc; margin-top: 12px; }
+    details { margin-top: 24px; border-top: 1px solid #283247; padding-top: 16px; }
+    summary { cursor: pointer; padding: 6px 0; }
+    [hidden] { display: none !important; }
+    @media(max-width: 400px) { main { padding: 20px; } }
   </style>
 </head>
 <body>
   <main>
     <h1>M5 Personal</h1>
-    <p>Grave a versão mais recente no M5StickC Plus 2 sem Arduino IDE.</p>
+    <p>Instale o firmware publicado no <strong>M5StickC Plus 2</strong> pelo USB.</p>
     <ol>
       <li>Use Chrome ou Edge no computador.</li>
       <li>Conecte o M5 por um cabo USB com dados.</li>
       <li>Clique em <strong>Conectar e instalar</strong>.</li>
     </ol>
 
-    <esp-web-install-button manifest="manifest.json">
-      <button slot="activate">Conectar e instalar</button>
+    <div class="status" role="status" aria-live="polite">
+      <p id="installStatus">Verificando navegador e publicação…</p>
+      <button id="retryButton" class="secondary" type="button" onclick="checkRelease()" hidden>Verificar novamente</button>
+    </div>
+
+    <esp-web-install-button id="installer" manifest="manifest.json" hidden>
+      <button id="installButton" slot="activate" type="button" disabled>Conectar e instalar</button>
       <span slot="unsupported">Este navegador não suporta gravação serial. Use Chrome ou Edge.</span>
     </esp-web-install-button>
 
     <div class="meta">
-      Versão publicada: <span id="version" class="version">carregando…</span><br>
-      Firmware compilado automaticamente a partir da branch <code>main</code>.
+      Versão disponível: <span id="version" class="version">verificando…</span><br>
+      O assistente de instalação mostrará o progresso e a confirmação da gravação.
     </div>
+    <details>
+      <summary>O M5 não aparece na lista de portas?</summary>
+      <p>Use um cabo USB que transmita dados e feche programas que estejam usando a porta do M5. Depois tente conectar novamente.</p>
+    </details>
+    <details>
+      <summary>Depois de instalar</summary>
+      <p>Configure o Wi-Fi na tela do M5. Para abrir o controle pelo navegador, conecte-se à mesma rede e use o endereço IP mostrado no aparelho.</p>
+      <p>Se o instalador oferecer apagar o dispositivo, essa opção também remove suas configurações salvas.</p>
+    </details>
+    <noscript><p>Ative o JavaScript para verificar o firmware e abrir o instalador USB.</p></noscript>
   </main>
-
-  <script>
-    fetch(`version.json?${Date.now()}`, { cache: "no-store" })
-      .then((response) => {
-        if (!response.ok) throw new Error("version.json indisponível");
-        return response.json();
-      })
-      .then((data) => {
-        document.getElementById("version").textContent = data.version || "desconhecida";
-      })
-      .catch(() => {
-        document.getElementById("version").textContent = "aguardando primeiro build";
-      });
-  </script>
 </body>
 </html>

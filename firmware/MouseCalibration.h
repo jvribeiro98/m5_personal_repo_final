@@ -1,33 +1,71 @@
 #pragma once
+#include <cmath>
 
 // A window of samples tolerates sensor noise and estimates a constant bias.
-// No single noisy sample should restart an otherwise stationary calibration.
+// Transient noise penalizes count gently, while active motion and NaNs reset.
 struct MouseCalibration {
   static constexpr unsigned target = 80;
   unsigned count = 0;
-  float mean[3] = {}, m2[3] = {};
+  unsigned index = 0;
+  float samples[3][80] = {};
+  float mean[3] = {};
+  float m2[3] = {};
   bool ready = false;
-  constexpr void reset() {
-    count = 0; ready = false;
-    for (int i=0;i<3;++i) mean[i]=m2[i]=0;
+
+  void reset() {
+    count = 0;
+    index = 0;
+    ready = false;
+    for (int i = 0; i < 3; ++i) {
+      mean[i] = 0.0f;
+      m2[i] = 0.0f;
+    }
   }
-  constexpr bool add(float x, float y, float z, float gravitySquared) {
+
+  bool add(float x, float y, float z, float gravitySquared) {
     if (ready) return true;
-    if (!(gravitySquared > .5f && gravitySquared < 1.7f) ||
-        !(x > -40 && x < 40 && y > -40 && y < 40 && z > -40 && z < 40)) {
-      reset(); return false;
+
+    // Reject NaNs and non-finite sensor values immediately
+    if (!std::isfinite(gravitySquared) || !std::isfinite(x) ||
+        !std::isfinite(y) || !std::isfinite(z)) {
+      reset();
+      return false;
     }
-    float rates[3] = {x,y,z};
-    ++count;
-    for (int i=0;i<3;++i) {
-      float delta = rates[i]-mean[i];
-      mean[i] += delta/count;
-      m2[i] += delta*(rates[i]-mean[i]);
+
+    // Check bounds for stationary device
+    if (!(gravitySquared > 0.5f && gravitySquared < 1.7f) ||
+        !(x > -40.0f && x < 40.0f && y > -40.0f && y < 40.0f && z > -40.0f && z < 40.0f)) {
+      if (count > 0) count--;
+      return false;
     }
+
+    samples[0][index] = x;
+    samples[1][index] = y;
+    samples[2][index] = z;
+    index = (index + 1) % target;
+    if (count < target) count++;
+
     if (count < target) return false;
-    for (int i=0;i<3;++i) {
-      if (m2[i]/count > 4.0f) { reset(); return false; }
+
+    // Validate variance across all 3 axes
+    for (int i = 0; i < 3; ++i) {
+      float sum = 0.0f;
+      for (unsigned j = 0; j < target; ++j) sum += samples[i][j];
+      float m = sum / target;
+      float varSum = 0.0f;
+      for (unsigned j = 0; j < target; ++j) {
+        float d = samples[i][j] - m;
+        varSum += d * d;
+      }
+      m2[i] = varSum;
+      if (varSum / target > 4.0f) {
+        // Active motion detected: reset count
+        count = 0;
+        return false;
+      }
+      mean[i] = m;
     }
+
     ready = true;
     return true;
   }
