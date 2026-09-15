@@ -441,7 +441,12 @@ static uint32_t lastVoiceResultAt = 0;
 static M5Canvas uiCanvas(&M5.Display);
 static bool uiCanvasReady = false;
 
-void ensureUiCanvas();
+inline // ensureUiCanvas is defined inline at the top of the sketch
+
+inline M5Canvas& getGfx() {
+  ensureUiCanvas();
+  return uiCanvas;
+}
 void drawVoiceAiScreen();
 void processVoiceAiScreen();
 void initVoiceAiScreen();
@@ -2524,7 +2529,7 @@ String wifiKeyboard(const String& title, const String& initial, bool masked, boo
 
     if (redrawKeyboard) {
       redrawKeyboard = false;
-      auto& d = M5.Display;
+      auto& d = getGfx();
       d.fillScreen(UI_BG);
 
       const char* actions[] = {"OK", "A@", "<-", "_", "EX"};
@@ -2576,6 +2581,7 @@ String wifiKeyboard(const String& title, const String& initial, bool masked, boo
           d.drawString(String(BRUCE_KEYS[row][col][caps ? 1 : 0]), keyX + keyW / 2, keyY + keyH / 2);
         }
       }
+      uiCanvas.pushSprite(0, 0);
     }
 
     // Longos têm prioridade sobre os curtos.
@@ -2869,7 +2875,7 @@ void processWeatherAndClock() {
 }
 
 void drawWifiIcon(int x, int y, bool connected) {
-  auto& d = M5.Display;
+  auto& d = getGfx();
   uint16_t col = connected ? UI_GREEN : UI_MUTED;
 
   // Ponto base
@@ -2964,7 +2970,7 @@ bool isBatteryChargingCached() {
 }
 
 void drawBatteryGauge(int x, int y, int battery, bool charging) {
-  auto& d = M5.Display;
+  auto& d = getGfx();
   uint16_t bColor = UI_GREEN;
   if (charging) bColor = UI_CYAN;
   else if (battery <= 20) bColor = UI_RED;
@@ -2992,7 +2998,7 @@ void drawBatteryGauge(int x, int y, int battery, bool charging) {
 }
 
 void drawStatusBar() {
-  auto& d = M5.Display;
+  auto& d = getGfx();
 
   // 1. Wi-Fi icone grafico (centrado e com status conectado / desconectado)
   bool wifiConnected = (WiFi.status() == WL_CONNECTED);
@@ -3012,14 +3018,7 @@ void drawStatusBar() {
 
 void updateStatusBarClock() {
   if (!isMenuScreen(screen)) return;
-  auto& d = M5.Display;
-  d.startWrite();
-  d.fillRect(190, 2, 48, 23, UI_BG);
-  d.setTextDatum(middle_right);
-  d.setTextSize(1);
-  d.setTextColor(clockIsValid() ? UI_YELLOW : UI_MUTED, UI_BG);
-  d.drawString(clockTimeText(), 234, 13);
-  d.endWrite();
+  redraw = true;
 }
 
 
@@ -3034,7 +3033,7 @@ String clockDayOfWeekText() {
 }
 
 void drawWeatherIcon(int x, int y, float temp, bool connected) {
-  auto& d = M5.Display;
+  auto& d = getGfx();
   if (!connected && isnan(temp)) {
     d.drawCircle(x + 7, y + 7, 6, UI_MUTED);
     d.drawFastHLine(x + 1, y + 7, 12, UI_MUTED);
@@ -3060,9 +3059,8 @@ void drawWeatherIcon(int x, int y, float temp, bool connected) {
 }
 
 void drawCyberWatchface(bool fullClear) {
-  auto& d = M5.Display;
+  auto& d = getGfx();
   d.setRotation(3);
-  d.startWrite();
 
   time_t now = time(nullptr);
   tm value;
@@ -3321,7 +3319,7 @@ void drawCyberWatchface(bool fullClear) {
     }
   }
 
-  d.endWrite();
+  uiCanvas.pushSprite(0, 0);
   lastClockRedrawAt = millis();
 }
 
@@ -3386,15 +3384,16 @@ void drawSettingsMenu() {
 }
 
 void drawSettingsBrightness() {
+  auto& display = getGfx();
   drawTitle("BRILHO", String((brightnessIndex + 1) * 20) + "%");
-  M5.Display.fillRect(30, 42, 180, 58, UI_BG);
-  M5.Display.setTextDatum(middle_center);
-  M5.Display.setTextColor(UI_TEXT, UI_BG);
-  M5.Display.setTextSize(5);
-  M5.Display.drawString(String((brightnessIndex + 1) * 20) + "%", 120, 76);
-  M5.Display.setTextSize(1);
-  M5.Display.setTextColor(UI_MUTED, UI_BG);
-  M5.Display.drawString("B/C ALTERA  A SALVA", 120, 108);
+  display.fillRect(30, 42, 180, 58, UI_BG);
+  display.setTextDatum(middle_center);
+  display.setTextColor(UI_TEXT, UI_BG);
+  display.setTextSize(5);
+  display.drawString(String((brightnessIndex + 1) * 20) + "%", 120, 76);
+  display.setTextSize(1);
+  display.setTextColor(UI_MUTED, UI_BG);
+  display.drawString("B/C ALTERA  A SALVA", 120, 108);
 }
 
 void drawSettingsClock() {
@@ -3402,20 +3401,21 @@ void drawSettingsClock() {
 }
 
 void drawSettingsSleep() {
+  auto& display = getGfx();
   drawTitle("DESCANSO DE TELA");
-  M5.Display.setTextDatum(middle_center);
-  M5.Display.setTextSize(2);
-  M5.Display.setTextColor(UI_TEXT, UI_BG);
-  M5.Display.drawString("3 MIN", 120, 55);
-  M5.Display.setTextSize(1);
-  M5.Display.setTextColor(UI_MUTED, UI_BG);
-  M5.Display.drawString("RELOGIO COM BRILHO BAIXO", 120, 77);
-  M5.Display.setTextSize(2);
-  M5.Display.setTextColor(UI_TEXT, UI_BG);
-  M5.Display.drawString("+ 10 MIN", 120, 98);
-  M5.Display.setTextSize(1);
-  M5.Display.setTextColor(UI_MUTED, UI_BG);
-  M5.Display.drawString("TELA APAGADA / SISTEMA ATIVO", 120, 116);
+  display.setTextDatum(middle_center);
+  display.setTextSize(2);
+  display.setTextColor(UI_TEXT, UI_BG);
+  display.drawString("3 MIN", 120, 55);
+  display.setTextSize(1);
+  display.setTextColor(UI_MUTED, UI_BG);
+  display.drawString("RELOGIO COM BRILHO BAIXO", 120, 77);
+  display.setTextSize(2);
+  display.setTextColor(UI_TEXT, UI_BG);
+  display.drawString("+ 10 MIN", 120, 98);
+  display.setTextSize(1);
+  display.setTextColor(UI_MUTED, UI_BG);
+  display.drawString("TELA APAGADA / SISTEMA ATIVO", 120, 116);
 }
 
 // ============================================================
@@ -3423,7 +3423,7 @@ void drawSettingsSleep() {
 // ============================================================
 
 void drawFooter() {
-  auto& display = M5.Display;
+  auto& display = getGfx();
   display.fillRect(0, 120, 240, 15, UI_BG);
   display.setTextSize(1);
 
@@ -3648,7 +3648,7 @@ void drawFooter() {
 }
 
 void drawTitle(const String& title, const String& subtitle) {
-  auto& display = M5.Display;
+  auto& display = getGfx();
   display.fillRect(0, 0, 240, 27, UI_BG);
   display.fillRoundRect(4, 4, 3, 18, 1, UI_SELECTED);
 
@@ -3676,7 +3676,7 @@ void drawTitle(const String& title, const String& subtitle) {
 }
 
 void drawListItem(uint8_t index, int y, const String& label, const String& detail) {
-  auto& display = M5.Display;
+  auto& display = getGfx();
   const bool active = selected == index;
   const uint16_t fill = active ? UI_PANEL_ALT : UI_PANEL;
   const uint16_t border = active ? UI_SELECTED : UI_BORDER;
@@ -3722,7 +3722,7 @@ void drawListItem(uint8_t index, int y, const String& label, const String& detai
 
 void drawGridButton(uint8_t index, int x, int y, int w, int h,
                     const String& label, const String& value) {
-  auto& display = M5.Display;
+  auto& display = getGfx();
   const bool active = selected == index;
   const uint16_t fill = active ? UI_PANEL_ALT : UI_PANEL;
   const uint16_t border = active ? UI_SELECTED : UI_BORDER;
@@ -3744,13 +3744,13 @@ void drawGridButton(uint8_t index, int x, int y, int w, int h,
 }
 
 void drawMain() {
+  auto& d = getGfx();
   drawTitle("M5 PERSONAL");
   const char* labels[] = {"Relogio Cyber", "Controle IR", "Wi-Fi Hub", "Air Mouse", "Agente IA", "Team Penning", "Ajustes"};
   const char* notes[]  = {"Watchface HUD e clima", "TV e ar-condicionado", "Redes e controle web", "Apontador Bluetooth", "Comando de voz no PC", "Contagem e treinos", "Tela, relogio, repouso"};
   const char* badges[] = {"CK", "IR", "WF", "MS", "IA", "TP", "CF"};
   const uint16_t badgeColors[] = {UI_CYAN, UI_ORANGE, UI_CYAN, UI_GREEN, UI_PURPLE, UI_YELLOW, UI_MUTED};
 
-  auto& d = M5.Display;
   d.fillRect(0, 28, 240, 92, UI_BG);
 
   const int totalItems = 7;
@@ -3826,22 +3826,24 @@ void drawWifiMenu() {
 
 
 void drawWifiScanning() {
+  auto& display = getGfx();
   drawTitle("WIFI", "ESCANEANDO...");
-  M5.Display.fillRect(20, 55, 200, 30, UI_BG);
-  M5.Display.setTextDatum(middle_center);
-  M5.Display.setTextSize(2);
-  M5.Display.setTextColor(UI_SELECTED, UI_BG);
+  display.fillRect(20, 55, 200, 30, UI_BG);
+  display.setTextDatum(middle_center);
+  display.setTextSize(2);
+  display.setTextColor(UI_SELECTED, UI_BG);
   String dots;
   for (uint8_t i = 0; i < (millis() / 300) % 4; i++) dots += ".";
-  M5.Display.drawString("PROCURANDO" + dots, 120, 70);
+  display.drawString("PROCURANDO" + dots, 120, 70);
 }
 
 void drawWifiNetworks() {
+  auto& display = getGfx();
   drawTitle("REDES DISPONIVEIS", String(scannedNetworkCount));
   if (!scannedNetworkCount) {
-    M5.Display.setTextDatum(middle_center);
-    M5.Display.setTextColor(UI_RED, UI_BG);
-    M5.Display.drawString("NENHUMA REDE", 120, 70);
+    display.setTextDatum(middle_center);
+    display.setTextColor(UI_RED, UI_BG);
+    display.drawString("NENHUMA REDE", 120, 70);
     return;
   }
 
@@ -3855,67 +3857,72 @@ void drawWifiNetworks() {
 }
 
 void drawWifiConnecting() {
+  auto& display = getGfx();
   drawTitle("CONECTANDO", wifiPendingSsid);
-  M5.Display.fillRect(20, 50, 200, 60, UI_BG);
+  display.fillRect(20, 50, 200, 60, UI_BG);
   const char frames[] = {'|', '/', '-', '\\'};
   char frame[2] = {frames[(millis() / 180) % 4], '\0'};
-  M5.Display.setTextDatum(middle_center);
-  M5.Display.setTextSize(3);
-  M5.Display.setTextColor(UI_SELECTED, UI_BG);
-  M5.Display.drawString(frame, 120, 70);
-  M5.Display.setTextSize(1);
-  M5.Display.setTextColor(UI_MUTED, UI_BG);
-  M5.Display.drawString(String((millis() - wifiConnectStartedAt) / 1000) + "s", 120, 96);
+  display.setTextDatum(middle_center);
+  display.setTextSize(3);
+  display.setTextColor(UI_SELECTED, UI_BG);
+  display.drawString(frame, 120, 70);
+  display.setTextSize(1);
+  display.setTextColor(UI_MUTED, UI_BG);
+  display.drawString(String((millis() - wifiConnectStartedAt) / 1000) + "s", 120, 96);
 }
 
 void drawWifiResult() {
+  auto& display = getGfx();
   drawTitle(wifiResultTitle, wifiResultDetail);
-  M5.Display.setTextDatum(middle_center);
-  M5.Display.setTextSize(2);
-  M5.Display.setTextColor(wifiResultTitle == "CONECTADO" ? UI_GREEN : UI_RED, UI_BG);
-  M5.Display.drawString(wifiResultTitle == "CONECTADO" ? "OK" : "ERRO", 120, 65);
+  display.setTextDatum(middle_center);
+  display.setTextSize(2);
+  display.setTextColor(wifiResultTitle == "CONECTADO" ? UI_GREEN : UI_RED, UI_BG);
+  display.drawString(wifiResultTitle == "CONECTADO" ? "OK" : "ERRO", 120, 65);
   if (WiFi.status() == WL_CONNECTED) {
-    M5.Display.setTextSize(1);
-    M5.Display.setTextColor(UI_TEXT, UI_BG);
-    M5.Display.drawString(WiFi.localIP().toString(), 120, 92);
+    display.setTextSize(1);
+    display.setTextColor(UI_TEXT, UI_BG);
+    display.drawString(WiFi.localIP().toString(), 120, 92);
   }
 }
 
 void drawWifiApInfo() {
+  auto& display = getGfx();
   drawTitle("CONECTAR WEB UI", "AP ATIVO");
-  M5.Display.setTextDatum(middle_center);
-  M5.Display.setTextSize(1);
-  M5.Display.setTextColor(UI_TEXT, UI_BG);
-  M5.Display.drawString("REDE: " + String(WIFI_SETUP_SSID), 120, 49);
-  M5.Display.drawString("SENHA: " + String(WIFI_SETUP_PASSWORD), 120, 66);
-  M5.Display.setTextColor(UI_SELECTED, UI_BG);
-  M5.Display.drawString("192.168.4.1", 120, 86);
-  M5.Display.setTextColor(UI_MUTED, UI_BG);
-  M5.Display.drawString("B LONGO PARA SAIR", 120, 106);
+  display.setTextDatum(middle_center);
+  display.setTextSize(1);
+  display.setTextColor(UI_TEXT, UI_BG);
+  display.drawString("REDE: " + String(WIFI_SETUP_SSID), 120, 49);
+  display.drawString("SENHA: " + String(WIFI_SETUP_PASSWORD), 120, 66);
+  display.setTextColor(UI_SELECTED, UI_BG);
+  display.drawString("192.168.4.1", 120, 86);
+  display.setTextColor(UI_MUTED, UI_BG);
+  display.drawString("B LONGO PARA SAIR", 120, 106);
 }
 
 void drawWifiWebUiNetwork() {
+  auto& display = getGfx();
   drawTitle("WEB UI REDE", WiFi.status() == WL_CONNECTED ? WiFi.SSID() : "SEM WIFI");
-  M5.Display.setTextDatum(middle_center);
-  M5.Display.setTextSize(2);
-  M5.Display.setTextColor(webUiMode == WebUiMode::LAN ? UI_GREEN : UI_RED, UI_BG);
-  M5.Display.drawString(webUiMode == WebUiMode::LAN ? "ATIVA" : "DESATIVADA", 120, 62);
-  M5.Display.setTextSize(1);
-  M5.Display.setTextColor(UI_TEXT, UI_BG);
+  display.setTextDatum(middle_center);
+  display.setTextSize(2);
+  display.setTextColor(webUiMode == WebUiMode::LAN ? UI_GREEN : UI_RED, UI_BG);
+  display.drawString(webUiMode == WebUiMode::LAN ? "ATIVA" : "DESATIVADA", 120, 62);
+  display.setTextSize(1);
+  display.setTextColor(UI_TEXT, UI_BG);
   if (WiFi.status() == WL_CONNECTED) {
-    M5.Display.drawString(WiFi.localIP().toString(), 120, 90);
+    display.drawString(WiFi.localIP().toString(), 120, 90);
   } else {
-    M5.Display.drawString("CONECTE AO WIFI", 120, 90);
+    display.drawString("CONECTE AO WIFI", 120, 90);
   }
 }
 
 
 void drawWifiSavedList() {
+  auto& display = getGfx();
   drawTitle("REDES SALVAS", String(savedNetworkCount) + "/10");
   if (!savedNetworkCount) {
-    M5.Display.setTextDatum(middle_center);
-    M5.Display.setTextColor(UI_MUTED, UI_BG);
-    M5.Display.drawString("NENHUMA REDE", 120, 68);
+    display.setTextDatum(middle_center);
+    display.setTextColor(UI_MUTED, UI_BG);
+    display.drawString("NENHUMA REDE", 120, 68);
     return;
   }
 
@@ -4008,7 +4015,7 @@ void drawTvRemote(bool navigationPage) {
 void drawAcRemote() {
   const AcDevice& device = airConditioners[activeAc];
   const AcState& state = device.state;
-  auto& display = M5.Display;
+  auto& display = getGfx();
 
   display.fillRoundRect(4, 3, 232, 52, 7, UI_PANEL);
   display.drawRoundRect(4, 3, 232, 52, 7, UI_BORDER);
@@ -4062,7 +4069,7 @@ void drawTeamMenu() {
 
 void drawCattleLimit() {
   drawTitle("CONFIGURAR GADO", "LIMITE");
-  auto& display = M5.Display;
+  auto& display = getGfx();
   display.fillRoundRect(10, 32, 220, 84, 6, UI_PANEL);
   display.drawRoundRect(10, 32, 220, 84, 6, UI_SELECTED);
 
@@ -4083,7 +4090,7 @@ void drawCattleLimit() {
 }
 
 void drawCattleCounter() {
-  auto& display = M5.Display;
+  auto& display = getGfx();
   const uint8_t remaining = cattleRemainingCount();
   String subTitle = "FALTAM: " + String(remaining) + "/" + String(cattleMaxNumber + 1);
   if (remaining == 1) subTitle = "ULTIMO BOI!";
@@ -4189,7 +4196,7 @@ void drawCattleCounter() {
 
 void drawCattleResetConfirm() {
   drawTitle("TEAM PENNING", "CONFIRMACAO");
-  auto& display = M5.Display;
+  auto& display = getGfx();
   display.fillRoundRect(12, 32, 216, 84, 6, UI_PANEL);
   display.drawRoundRect(12, 32, 216, 84, 6, UI_RED);
 
@@ -4208,7 +4215,7 @@ void drawCattleResetConfirm() {
 
 void drawTrainingCount() {
   drawTitle("NOVO TREINO", "CONFIGURACAO");
-  auto& display = M5.Display;
+  auto& display = getGfx();
   display.fillRoundRect(12, 32, 216, 84, 6, UI_PANEL);
   display.drawRoundRect(12, 32, 216, 84, 6, UI_SELECTED);
 
@@ -4230,7 +4237,7 @@ void drawTrainingCount() {
 
 void drawTrainingSelectHorse() {
   drawTitle("ESCOLHA O CAVALO", String(trainingSetupSlot + 1) + " DE " + String(trainingSetupCount));
-  auto& display = M5.Display;
+  auto& display = getGfx();
   display.fillRoundRect(12, 32, 216, 84, 6, UI_PANEL);
   display.drawRoundRect(12, 32, 216, 84, 6, UI_SELECTED);
 
@@ -4255,7 +4262,7 @@ void drawTrainingSelectHorse() {
 void drawTrainingActive() {
   uint8_t i = trainingSession.currentHorse;
   drawTitle("TREINO ATIVO", String(i + 1) + "/" + String(trainingSession.horseCount));
-  auto& display = M5.Display;
+  auto& display = getGfx();
 
   // Painel Esquerdo: Cavalo Atual
   display.fillRoundRect(6, 30, 110, 86, 6, UI_PANEL);
@@ -4298,7 +4305,7 @@ void drawTrainingActive() {
 
 void drawTrainingEndConfirm() {
   drawTitle("TREINO", "FINALIZAR");
-  auto& display = M5.Display;
+  auto& display = getGfx();
   display.fillRoundRect(12, 32, 216, 84, 6, UI_PANEL);
   display.drawRoundRect(12, 32, 216, 84, 6, UI_YELLOW);
 
@@ -4320,7 +4327,7 @@ void drawTrainingSummary() {
   if (!r.valid || !r.horseCount) { drawTitle("TREINO SALVO", "SEM DADOS"); return; }
   uint8_t i = min<uint8_t>(trainingSummaryHorse, r.horseCount - 1);
   drawTitle("TREINO CONCLUIDO", String(r.date));
-  auto& display = M5.Display;
+  auto& display = getGfx();
 
   display.fillRoundRect(6, 30, 110, 86, 6, UI_PANEL);
   display.drawRoundRect(6, 30, 110, 86, 6, UI_SELECTED);
@@ -4367,7 +4374,7 @@ void drawTrainingHistoryDetail() {
   if (!r.valid || !r.horseCount) { drawTitle("SEM REGISTRO"); return; }
   uint8_t i = min<uint8_t>(trainingHistoryHorse, r.horseCount - 1);
   drawTitle("TREINO " + String(trainingHistoryRecord + 1), String(r.date));
-  auto& display = M5.Display;
+  auto& display = getGfx();
 
   display.fillRoundRect(6, 30, 110, 86, 6, UI_PANEL);
   display.drawRoundRect(6, 30, 110, 86, 6, UI_SELECTED);
@@ -5280,20 +5287,22 @@ void processVoiceAiScreen() {
 }
 
 void drawScreen() {
-  auto& display = M5.Display;
   const bool portrait = (screen == Screen::MOUSE);
-  display.setRotation(portrait ? 0 : 3);
-  display.startWrite();
 
-  static Screen lastRenderedScreen = (Screen)255;
-  static bool lastRenderedPortrait = false;
-
-  if (forceFullRedraw || screen != lastRenderedScreen || portrait != lastRenderedPortrait) {
-    display.fillScreen(UI_BG);
-    forceFullRedraw = false;
-    lastRenderedScreen = screen;
-    lastRenderedPortrait = portrait;
+  if (portrait) {
+    auto& display = M5.Display;
+    display.setRotation(0);
+    display.startWrite();
+    drawMouseScreen();
+    display.endWrite();
+    redraw = false;
+    return;
   }
+
+  // Double-Buffering Integral (Padrão Bruce / CatHack - 60 FPS sem Flicker / Tearing)
+  ensureUiCanvas();
+  uiCanvas.setRotation(3);
+  uiCanvas.fillScreen(UI_BG);
 
   switch (screen) {
     case Screen::MAIN:                drawMain(); break;
@@ -5330,11 +5339,16 @@ void drawScreen() {
     case Screen::SETTINGS_CLOCK: drawSettingsClock(); break;
     case Screen::SETTINGS_SLEEP: drawSettingsSleep(); break;
     case Screen::MOUSE:          drawMouseScreen(); break;
-    case Screen::VOICE_AI:     drawVoiceAiScreen(); break;
+    case Screen::VOICE_AI:       drawVoiceAiScreen(); break;
   }
 
-  if (!portrait && screen != Screen::VOICE_AI) drawFooter();
-  display.endWrite();
+  if (screen != Screen::VOICE_AI && screen != Screen::SETTINGS_CLOCK) {
+    drawFooter();
+  }
+
+  // Push Atômico do Quadro Inteiro para o ST7789 via DMA/SPI (Zero Flickering)
+  M5.Display.setRotation(3);
+  uiCanvas.pushSprite(0, 0);
   redraw = false;
 }
 
