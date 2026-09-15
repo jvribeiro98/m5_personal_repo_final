@@ -65,6 +65,13 @@ class BridgeTests(unittest.TestCase):
         self.assertNotIn('ir', result)
         http.assert_not_called()
 
+    def test_unsupported_imperative_command_does_not_query_agy(self):
+        with patch.object(bridge, 'query_agy_agent') as agy:
+            result = bridge.parse_voice_command('execute um comando maluco')
+        self.assertEqual(result['title'], 'COMANDO NÃO SUPORTADO')
+        self.assertFalse(result['auto_resume'])
+        agy.assert_not_called()
+
     def test_processing_http_audio_does_not_send_serial_copy(self):
         port = Mock(is_open=True)
         with patch.object(bridge, 'ser_global', port), patch.object(

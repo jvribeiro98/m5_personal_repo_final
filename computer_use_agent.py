@@ -3,6 +3,7 @@
 
 import os
 import re
+import shutil
 import subprocess
 import time
 import unicodedata
@@ -68,7 +69,10 @@ def _open_result(text, url, title, body):
 # pesquisa/digitação não deve acionar atalhos apenas por conter estas palavras.
 _DIRECT_ACTIONS = (
     ("tela cheia|tela inteira|fullscreen|maximizar video|sair de tela cheia", "key_press", ("f",), "TELA CHEIA", "Comando de tela cheia enviado."),
-    ("proximo video|proxima musica|pular video|pula esse|proxima faixa", "hotkey", ("shift", "n"), "PRÓXIMO", "Comando de próxima mídia enviado."),
+    ("proximo video|proxima musica|pular video|pula esse|proxima faixa|pular musica|pula musica|avancar musica|avanca musica", "hotkey", ("shift", "n"), "PRÓXIMO", "Comando de próxima mídia enviado."),
+    ("video anterior|musica anterior|faixa anterior|voltar musica|volta musica", "key_press", ("media_prev",), "ANTERIOR", "Comando de mídia anterior enviado."),
+    ("parar musica|para musica|parar video|para video|parar reproducao|stop musica", "key_press", ("media_stop",), "PARADO", "Reprodução interrompida."),
+    ("bloquear tela|bloqueia a tela|bloquear pc|bloqueia o pc|travar tela|travar pc|lock pc|bloquear computador|bloqueie o computador", "lock_workstation", (), "PC BLOQUEADO", "Computador bloqueado com sucesso."),
     ("role para baixo|rola para baixo|desce a pagina|rolar para baixo|mais para baixo|desce mais|rola mais|rola pra baixo", "mouse_scroll", (-6,), "PAGINA BAIXO", "Página rolada para baixo."),
     ("role para cima|rola para cima|sobe a pagina|rolar para cima|mais para cima|sobe mais|rola pra cima", "mouse_scroll", (6,), "PAGINA CIMA", "Página rolada para cima."),
     ("nova aba|abrir nova aba|abra uma nova aba|abre outra aba|mais uma aba", "hotkey", ("ctrl", "t"), "NOVA ABA", "Comando de nova aba enviado."),
@@ -76,8 +80,8 @@ _DIRECT_ACTIONS = (
     ("atualizar pagina|atualizar a pagina|recarregar pagina|recarregar a pagina|atualiza a tela|f5", "key_press", ("f5",), "RECARREGADO", "Comando para recarregar enviado."),
     ("voltar pagina|volta a pagina|pagina anterior|volte a pagina", "hotkey", ("alt", "left"), "VOLTAR", "Comando de página anterior enviado."),
     ("avancar pagina|proxima pagina", "hotkey", ("alt", "right"), "AVANÇAR", "Comando de próxima página enviado."),
-    ("feche o programa|fecha o programa|feche a janela|fecha essa janela|fechar janela|feche o chrome|fecha o chrome|feche o navegador|fecha o navegador", "hotkey", ("alt", "f4"), "FECHADO", "Comando para fechar a janela enviado."),
-    ("mostrar area de trabalho|minimizar tudo|vai para o desktop", "hotkey", ("win", "d"), "DESKTOP", "Comando de área de trabalho enviado."),
+    ("feche o programa|fecha o programa|feche a janela|fecha essa janela|fechar janela|feche o chrome|fecha o chrome|feche o navegador|fecha o navegador|fechar programa|feche o aplicativo", "hotkey", ("alt", "f4"), "FECHADO", "Comando para fechar a janela enviado."),
+    ("mostrar area de trabalho|minimizar tudo|vai para o desktop|minimiza tudo|mostrar desktop", "hotkey", ("win", "d"), "DESKTOP", "Comando de área de trabalho enviado."),
     ("enter|de enter|da enter|confirmar", "key_press", ("enter",), "ENTER", "Tecla Enter pressionada."),
     ("escape|esc|cancela|cancelar", "key_press", ("esc",), "ESC", "Tecla Escape pressionada."),
 )
@@ -97,6 +101,67 @@ _SITES = {
     "chat gpt": ("https://chatgpt.com", "CHATGPT"),
     "twitch": ("https://www.twitch.tv", "TWITCH"),
 }
+
+_APPS = {
+    "spotify": ("spotify:", "SPOTIFY"),
+    "calculadora": ("calc.exe", "CALCULADORA"),
+    "calc": ("calc.exe", "CALCULADORA"),
+    "bloco de notas": ("notepad.exe", "BLOCO DE NOTAS"),
+    "notepad": ("notepad.exe", "BLOCO DE NOTAS"),
+    "gerenciador de tarefas": ("taskmgr.exe", "GERENCIADOR"),
+    "gerenciador": ("taskmgr.exe", "GERENCIADOR"),
+    "task manager": ("taskmgr.exe", "GERENCIADOR"),
+    "taskmgr": ("taskmgr.exe", "GERENCIADOR"),
+    "terminal": (shutil.which("wt") or "powershell.exe", "TERMINAL"),
+    "powershell": ("powershell.exe", "POWERSHELL"),
+    "cmd": ("cmd.exe", "PROMPT"),
+    "prompt": ("cmd.exe", "PROMPT"),
+    "vscode": (shutil.which("code") or shutil.which("cursor") or "code", "VS CODE"),
+    "vs code": (shutil.which("code") or shutil.which("cursor") or "code", "VS CODE"),
+    "visual studio code": (shutil.which("code") or shutil.which("cursor") or "code", "VS CODE"),
+    "cursor": (shutil.which("cursor") or shutil.which("code") or "cursor", "CURSOR"),
+    "explorador": ("explorer.exe", "EXPLORADOR"),
+    "arquivos": ("explorer.exe", "EXPLORADOR"),
+    "pastas": ("explorer.exe", "EXPLORADOR"),
+    "configuracoes": ("ms-settings:", "CONFIGURAÇÕES"),
+    "painel de controle": ("control.exe", "PAINEL DE CONTROLE"),
+    "paint": ("mspaint.exe", "PAINT"),
+    "discord": ("discord:", "DISCORD"),
+    "steam": ("steam:", "STEAM"),
+}
+
+
+def launch_app(target):
+    norm = _normalize(target)
+    if norm in _APPS:
+        cmd, title = _APPS[norm]
+        if cmd.endswith(":"):
+            startfile = getattr(os, "startfile", None)
+            if startfile:
+                try:
+                    startfile(cmd)
+                    return True, title, f"{title} iniciado."
+                except OSError:
+                    pass
+            try:
+                ok = bool(webbrowser.open(cmd))
+                return ok, title, f"{title} iniciado." if ok else f"Falha ao iniciar {title}."
+            except Exception as exc:
+                return False, title, f"Falha ao iniciar {title}: {exc}"
+        else:
+            try:
+                subprocess.Popen([cmd])
+                return True, title, f"{title} iniciado."
+            except OSError as exc:
+                return False, title, f"Falha ao executar {title}: {exc}"
+    resolved = shutil.which(norm)
+    if resolved:
+        try:
+            subprocess.Popen([resolved])
+            return True, target.upper(), f"Programa '{target}' iniciado."
+        except OSError as exc:
+            return False, "ERRO", f"Falha ao iniciar '{target}': {exc}"
+    return None, None, None
 
 
 def handle_computer_use(text, on_progress=None):
@@ -132,14 +197,15 @@ def _handle_command(text, on_progress):
     search = re.fullmatch(
         r"(?:(?:abra|abre|inicie|inicia)\s+(?:o\s+)?youtube\s+e\s+)?"
         r"(?:pesquisar|pesquise|pesquisa|procurar|procure|buscar|busca|busque|"
-        r"coloque|coloca|tocar|toca|toque|reproduzir|reproduza|ouvir|ouça)\s+"
+        r"coloque|coloca|tocar|toca|toque|reproduzir|reproduza|ouvir|ouça|bota|bote|botar)\s+"
         r"(?:(no\s+(?:google|youtube)|na\s+(?:internet|web))\s+)?"
         r"(?:por\s+|sobre\s+)?(.+)", text, re.IGNORECASE)
     if search:
         location = _normalize(search.group(1) or "")
         query = search.group(2).strip()
-        is_youtube = location == "no youtube" or (not location and bool(
-            re.search(r"\b(?:youtube|video|musica)\b", _normalize(text))))
+        is_music_verb = bool(re.search(r"\b(?:coloque|coloca|tocar|toca|toque|reproduzir|reproduza|ouvir|ouca|bota|bote|botar)\b", _normalize(text)))
+        is_youtube = location == "no youtube" or is_music_verb or bool(
+            re.search(r"\b(?:youtube|video|musica|clipe|som)\b", _normalize(text)))
         if is_youtube:
             query = re.sub(r"\s+e\s+(?:(?:d[êe]|da)\s+)?play[.!]?$", "", query, flags=re.IGNORECASE)
             query = re.sub(r"\s+no\s+youtube[.!]?$", "", query, flags=re.IGNORECASE).strip()
@@ -188,10 +254,17 @@ def _handle_command(text, on_progress):
         return _result(text, "ALTERNADO", f"Janela ativa: '{title[:80]}'.", "Janela")
 
     site_match = re.fullmatch(r"(?:abrir|abre|abra|iniciar|inicia|inicie|entra|entrar)\s+(?:(?:o|a|no|na)\s+)?(.+)", command)
-    site = site_match.group(1) if site_match else command if command in {"youtube", "google chrome"} else None
-    if site in _SITES:
-        url, title = _SITES[site]
-        return _open_result(text, url, title, f"{title} aberto no navegador.")
+    target = site_match.group(1) if site_match else command if (command in _SITES or command in _APPS) else None
+    if target:
+        norm_target = _normalize(target)
+        if norm_target in _SITES:
+            url, title = _SITES[norm_target]
+            return _open_result(text, url, title, f"{title} aberto no navegador.")
+        ok, title, msg = launch_app(norm_target)
+        if ok is not None:
+            return _result(text, title if ok else "ERRO", msg, "Aplicativo", success=ok)
+        if site_match:
+            return _result(text, "ERRO", f"Aplicativo ou site '{target}' não foi encontrado.", success=False)
 
     if command in {"clique no meio", "clica no meio", "clique na tela", "clica na tela"}:
         width, height = os_controller.get_screen_size()

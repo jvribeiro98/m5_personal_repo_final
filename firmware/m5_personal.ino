@@ -424,10 +424,10 @@ uint8_t voiceWavePhase = 0;
 uint32_t voiceAnimTimer = 0;
 bool voiceBridgeConnected = true;
 
-// Variáveis do modo Alexa / VOX (Detecção de Fala e Cooldown de Silêncio)
+// Variáveis do modo Alexa / VOX (Detecção de Fala e Cooldown de Silêncio Ultrarrápido)
 bool voxSpeechDetected = false;
 uint32_t voxSilenceStart = 0;
-static constexpr uint32_t VOX_SILENCE_COOLDOWN_MS = 2000; // 2.0s de silêncio contínuo
+static constexpr uint32_t VOX_SILENCE_COOLDOWN_MS = 600; // 600ms de silêncio contínuo (resposta instantânea)
 
 // Áudio: 16000Hz, 16-bit mono. 30 segundos no PSRAM (960.000 bytes)
 static constexpr size_t VOICE_SAMPLE_RATE = 16000;
@@ -3862,8 +3862,8 @@ void drawMain() {
   drawTitle("M5 PERSONAL");
   const char* labels[] = {"Relogio Cyber", "Controle IR", "Wi-Fi Hub", "Air Mouse", "Agente IA", "Team Penning", "Ajustes"};
   const char* notes[]  = {"Watchface HUD e clima", "TV e ar-condicionado", "Redes e controle web", "Apontador Bluetooth", "Comando de voz no PC", "Contagem e treinos", "Tela, relogio, repouso"};
-  const char* badges[] = {"CK", "IR", "WF", "MS", "IA", "TP", "CF"};
-  const uint16_t badgeColors[] = {UI_CYAN, UI_ORANGE, UI_CYAN, UI_GREEN, UI_PURPLE, UI_YELLOW, UI_MUTED};
+  const char* badges[] = {"HORA", "IR", "WIFI", "MOUSE", "IA", "BOIS", "AJUST"};
+  const uint16_t badgeColors[] = {UI_CYAN, UI_ORANGE, 0x05BF, UI_GREEN, 0x93FF, UI_YELLOW, UI_MUTED};
 
   d.fillRect(0, 28, 240, 92, UI_BG);
 
@@ -3882,26 +3882,26 @@ void drawMain() {
     d.drawRoundRect(6, y, 218, 26, 4, border);
 
     if (active) {
-      d.fillRoundRect(8, y + 4, 3, 18, 1, UI_SELECTED);
+      d.fillRoundRect(6, y + 2, 4, 22, 2, UI_SELECTED);
     }
 
-    // Badge de categoria
-    d.fillRoundRect(16, y + 4, 22, 18, 3, active ? badgeColors[item] : UI_PANEL);
-    d.drawRoundRect(16, y + 4, 22, 18, 3, badgeColors[item]);
+    // Badge de categoria estilizado (pill legível)
+    d.fillRoundRect(14, y + 4, 38, 18, 3, active ? badgeColors[item] : UI_PANEL);
+    d.drawRoundRect(14, y + 4, 38, 18, 3, badgeColors[item]);
     d.setTextDatum(middle_center);
     d.setTextSize(1);
     d.setTextColor(active ? UI_BG : badgeColors[item], active ? badgeColors[item] : UI_PANEL);
-    d.drawString(badges[item], 27, y + 13);
+    d.drawString(badges[item], 33, y + 13);
 
-    // Titulo
+    // Titulo com alto contraste
     d.setTextDatum(middle_left);
     d.setTextSize(1);
-    d.setTextColor(active ? UI_TEXT : UI_MUTED, cardBg);
-    d.drawString(labels[item], 43, y + 8);
+    d.setTextColor(active ? 0xFFFF : 0xD6BA, cardBg);
+    d.drawString(labels[item], 57, y + 8);
 
     // Subtitulo / Nota
-    d.setTextColor(active ? UI_YELLOW : UI_MUTED, cardBg);
-    d.drawString(notes[item], 43, y + 19);
+    d.setTextColor(active ? UI_CYAN : 0x8CD1, cardBg);
+    d.drawString(notes[item], 57, y + 19);
 
     // Indicador direito
     if (active) {
@@ -4974,29 +4974,37 @@ void drawVoiceAiScreen() {
 
   // ============================================================
   // TELA DE RESPOSTA DA IA (DOUBLE BUFFERING 64KB PSRAM, 60 FPS)
-  // A resposta permanece na tela para sempre enquanto escuta em background!
   // ============================================================
   if (voiceState == VoiceState::RESULT) {
-    uiCanvas.fillRect(0, 0, 240, 19, UI_BG);
+    uiCanvas.fillRect(0, 0, 240, 20, UI_BG);
 
     // Bolinha de Status
     uint16_t dotCol = UI_GREEN;
     if (!voiceBridgeConnected) dotCol = UI_RED;
     else if (voxSpeechDetected) dotCol = UI_YELLOW;
-    uiCanvas.fillCircle(10, 9, 4, dotCol);
+    uiCanvas.fillCircle(10, 10, 4, dotCol);
 
     uiCanvas.setTextDatum(middle_left);
     uiCanvas.setTextSize(1);
     uiCanvas.setTextColor(dotCol, UI_BG);
-    String topTitle = "RESPOSTA • " + (voiceActiveAgent.length() > 0 ? voiceActiveAgent : "AGY");
+    String topTitle = "RESPOSTA • " + (voiceActiveAgent.length() > 0 ? voiceActiveAgent : "IA");
     if (voxSpeechDetected) topTitle += " [OUVINDO...]";
-    uiCanvas.drawString(topTitle, 19, 9);
+    uiCanvas.drawString(topTitle, 19, 10);
 
     uiCanvas.setTextDatum(middle_right);
     uiCanvas.setTextColor(UI_MUTED, UI_BG);
-    uiCanvas.drawString("▲[C]  ▼[B]", 234, 9);
+    int totalL = countWrappedTextLines(224, voiceResultBody);
+    if (totalL > 5) {
+      char pgBuf[16];
+      int curPg = (voiceScrollLine / 4) + 1;
+      int totPg = ((totalL + 3) / 4);
+      snprintf(pgBuf, sizeof(pgBuf), "[%d/%d] ▲[C] ▼[B]", curPg, totPg);
+      uiCanvas.drawString(pgBuf, 234, 10);
+    } else {
+      uiCanvas.drawString("▲[C] ▼[B]", 234, 10);
+    }
 
-    uiCanvas.drawFastHLine(0, 19, 240, UI_BORDER);
+    uiCanvas.drawFastHLine(0, 20, 240, UI_BORDER);
 
     // Painel Central Liberado (x: 4, y: 22, w: 232, h: 96)
     uiCanvas.fillRoundRect(4, 22, 232, 96, 4, UI_PANEL);
@@ -5007,7 +5015,7 @@ void drawVoiceAiScreen() {
       uiCanvas.setTextSize(1);
       uiCanvas.setTextColor(UI_YELLOW, UI_PANEL);
       String qStr = "> " + voiceTranscription;
-      if (uiCanvas.textWidth(qStr) > 220) qStr = qStr.substring(0, 30) + "..";
+      if (uiCanvas.textWidth(qStr) > 220) qStr = qStr.substring(0, 32) + "..";
       uiCanvas.drawString(qStr, 8, 26);
       uiCanvas.drawFastHLine(8, 38, 224, UI_BORDER);
 
@@ -5039,7 +5047,7 @@ void drawVoiceAiScreen() {
     uiCanvas.drawString("C", 163, 126);
     uiCanvas.setTextColor(UI_TEXT, UI_BG);
     uiCanvas.setTextDatum(middle_left);
-    uiCanvas.drawString("▲ Subir", 173, 126);
+    uiCanvas.drawString(voiceScrollLine > 0 ? "▲ Subir" : "Voltar", 173, 126);
 
     // Push atômico sem flicker
     uiCanvas.pushSprite(0, 0);
@@ -5047,180 +5055,110 @@ void drawVoiceAiScreen() {
   }
 
   // ============================================================
-  // TELAS IDLE, LISTENING E THINKING
+  // TELAS IDLE, LISTENING E THINKING (LAYOUT FULL-WIDTH CYBER)
   // ============================================================
-  uiCanvas.fillRect(0, 0, 240, 27, UI_BG);
-  uiCanvas.fillRoundRect(4, 4, 3, 18, 1, UI_SELECTED);
+  uiCanvas.fillRect(0, 0, 240, 22, UI_BG);
+  uint16_t dotCol = UI_GREEN;
+  if (!voiceBridgeConnected) dotCol = UI_RED;
+  else if (voxSpeechDetected) dotCol = UI_YELLOW;
+  uiCanvas.fillCircle(10, 11, 4, dotCol);
+
   uiCanvas.setTextDatum(middle_left);
-  uiCanvas.setTextSize(2);
-  uiCanvas.setTextColor(UI_TEXT, UI_BG);
-  uiCanvas.drawString("AGENTE IA", 12, 13);
-  uiCanvas.drawFastHLine(0, 26, 240, UI_BORDER);
-
-  uiCanvas.setTextDatum(middle_right);
   uiCanvas.setTextSize(1);
-  uiCanvas.setTextColor(UI_YELLOW, UI_BG);
-  uiCanvas.drawString(voiceActiveAgent, 234, 13);
+  uiCanvas.setTextColor(UI_TEXT, UI_BG);
+  uiCanvas.drawString("AGENTE IA • PC BRIDGE", 20, 11);
+  uiCanvas.drawFastHLine(0, 22, 240, UI_BORDER);
 
-  // Painel Esquerdo (x: 6, y: 28, w: 96, h: 90)
-  uiCanvas.fillRoundRect(6, 28, 96, 90, 4, UI_PANEL);
-  uiCanvas.drawRoundRect(6, 28, 96, 90, 4, UI_BORDER);
+  // Badge do Modo no Topo Direito
+  uint16_t modeCol = (voiceInputMode == VoiceInputMode::ALEXA) ? UI_GREEN : UI_CYAN;
+  const char* modeTxt = (voiceInputMode == VoiceInputMode::ALEXA) ? "ALEXA LIVRE" : "PTT";
+  uiCanvas.fillRoundRect(156, 3, 78, 16, 3, UI_PANEL);
+  uiCanvas.drawRoundRect(156, 3, 78, 16, 3, modeCol);
+  uiCanvas.setTextDatum(middle_center);
+  uiCanvas.setTextSize(1);
+  uiCanvas.setTextColor(modeCol, UI_PANEL);
+  uiCanvas.drawString(modeTxt, 195, 11);
+
+  // Cartão Principal Unificado (x: 4, y: 25, w: 232, h: 93)
+  uiCanvas.fillRoundRect(4, 25, 232, 93, 4, UI_PANEL);
+  uiCanvas.drawRoundRect(4, 25, 232, 93, 4, UI_BORDER);
 
   if (voiceState == VoiceState::IDLE) {
-    uiCanvas.drawRoundRect(42, 35, 14, 18, 6, UI_CYAN);
-    uiCanvas.fillRect(45, 38, 8, 12, UI_CYAN);
-    uiCanvas.drawFastHLine(38, 55, 22, UI_BORDER);
-    uiCanvas.drawFastVLine(49, 55, 5, UI_BORDER);
-    uiCanvas.drawFastHLine(43, 60, 12, UI_BORDER);
-
-    uint16_t modeCol = (voiceInputMode == VoiceInputMode::ALEXA) ? UI_GREEN : UI_CYAN;
-    const char* modeTxt = (voiceInputMode == VoiceInputMode::ALEXA) ? "MODO ALEXA" : "MODO PTT";
-    uiCanvas.fillRoundRect(12, 68, 84, 16, 3, UI_PANEL_ALT);
-    uiCanvas.drawRoundRect(12, 68, 84, 16, 3, modeCol);
+    uiCanvas.fillRoundRect(36, 31, 168, 20, 3, UI_PANEL_ALT);
+    uiCanvas.drawRoundRect(36, 31, 168, 20, 3, UI_SELECTED);
     uiCanvas.setTextDatum(middle_center);
     uiCanvas.setTextSize(1);
-    uiCanvas.setTextColor(modeCol, UI_PANEL_ALT);
-    uiCanvas.drawString(modeTxt, 54, 76);
+    uiCanvas.setTextColor(0xFFFF, UI_PANEL_ALT);
+    uiCanvas.drawString("FALE: 'EI M5, [COMANDO]'", 120, 41);
+
+    uiCanvas.setTextDatum(middle_center);
+    uiCanvas.setTextColor(UI_CYAN, UI_PANEL);
+    uiCanvas.drawString("• 'desligue o ar'  • 'volume mais alto'", 120, 60);
+    uiCanvas.drawString("• 'toque jazz no youtube'  • 'que horas'", 120, 74);
 
     uiCanvas.setTextColor(UI_MUTED, UI_PANEL);
-    uiCanvas.drawString("[B] Trocar Modo", 54, 100);
+    uiCanvas.drawString(voiceInputMode == VoiceInputMode::ALEXA ? "[B] Alternar para PTT  •  Microfone Ativo" : "Segure ou aperte [A] para falar", 120, 98);
 
   } else if (voiceState == VoiceState::LISTENING) {
-    constexpr int bXs[] = {22, 35, 48, 61, 74};
-    constexpr int bHs[] = {12, 24, 38, 26, 14};
-    for (int b = 0; b < 5; ++b) {
-      int h = bHs[b] + (int)(sinf((voiceWavePhase + b * 50) * 0.1f) * 10.0f);
+    uiCanvas.setTextDatum(middle_center);
+    uiCanvas.setTextSize(1);
+    if (voxSpeechDetected) {
+      uiCanvas.setTextColor(UI_GREEN, UI_PANEL);
+      uiCanvas.drawString("VOZ DETECTADA • GRAVANDO", 120, 35);
+    } else {
+      uiCanvas.setTextColor(UI_CYAN, UI_PANEL);
+      uiCanvas.drawString(voiceInputMode == VoiceInputMode::ALEXA ? "ESCUTANDO • DIGA 'EI M5'..." : "GRAVANDO VOZ...", 120, 35);
+    }
+
+    // Ondas orgânicas de áudio estilo Siri/Alexa (9 barras animadas)
+    constexpr int bXs[] = {48, 64, 80, 96, 112, 128, 144, 160, 176};
+    constexpr int bHs[] = {8, 16, 26, 36, 42, 36, 26, 16, 8};
+    for (int b = 0; b < 9; ++b) {
+      int h = bHs[b] + (int)(sinf((voiceWavePhase + b * 40) * 0.12f) * 12.0f);
       h = constrain(h, 4, 38);
-      int by = 51 - h / 2;
-      uint16_t bCol = (b == 2) ? UI_YELLOW : ((b % 2 == 0) ? UI_CYAN : UI_GREEN);
-      uiCanvas.fillRoundRect(bXs[b], by, 7, h, 2, bCol);
-    }
-
-    uint16_t statusCol = (voiceInputMode == VoiceInputMode::ALEXA) ? UI_GREEN : UI_YELLOW;
-    uiCanvas.fillRoundRect(12, 70, 84, 16, 3, statusCol);
-    uiCanvas.setTextDatum(middle_center);
-    uiCanvas.setTextSize(1);
-    uiCanvas.setTextColor(UI_BG, statusCol);
-    if (voiceInputMode == VoiceInputMode::ALEXA) {
-      uiCanvas.drawString(voxSpeechDetected ? "FALANDO..." : "OUVINDO...", 54, 78);
-    } else {
-      uiCanvas.drawString("GRAVANDO...", 54, 78);
+      int by = 64 - h / 2;
+      uint16_t bCol = (b == 4) ? 0xFFFF : ((b % 2 == 0) ? UI_CYAN : UI_GREEN);
+      uiCanvas.fillRoundRect(bXs[b], by, 8, h, 2, bCol);
     }
 
     uiCanvas.setTextDatum(middle_center);
-    uiCanvas.setTextColor(UI_TEXT, UI_PANEL);
-    if (voiceInputMode == VoiceInputMode::ALEXA) {
-      uiCanvas.drawString("Diga: 'Ei M5'", 54, 100);
-    } else {
-      uint32_t elapsedMs = millis() - voiceRecStartTime;
-      float elapsedSec = elapsedMs / 1000.0f;
-      char secBuf[16];
-      snprintf(secBuf, sizeof(secBuf), "%.1fs / 30.0s", elapsedSec);
-      uiCanvas.drawString(secBuf, 54, 100);
-    }
-
-  } else if (voiceState == VoiceState::THINKING) {
-    uiCanvas.fillRoundRect(12, 38, 84, 20, 3, UI_PANEL_ALT);
-    uiCanvas.drawRoundRect(12, 38, 84, 20, 3, UI_CYAN);
-    uiCanvas.setTextDatum(middle_center);
-    uiCanvas.setTextSize(1);
-    uiCanvas.setTextColor(UI_CYAN, UI_PANEL_ALT);
-    uiCanvas.drawString("PROCESSANDO...", 54, 48);
-
-    int pW = ((millis() / 25) % 64) + 8;
-    uiCanvas.drawRoundRect(16, 68, 76, 7, 2, UI_BORDER);
-    uiCanvas.fillRect(18, 70, pW, 3, UI_CYAN);
-
-    uiCanvas.setTextDatum(middle_center);
-    uiCanvas.setTextColor(UI_MUTED, UI_PANEL);
-    uiCanvas.drawString("Consultando AGY", 54, 98);
-  }
-
-  // Painel Direito (x: 106, y: 28, w: 128, h: 90)
-  uiCanvas.fillRoundRect(106, 28, 128, 90, 4, UI_PANEL);
-  uiCanvas.drawRoundRect(106, 28, 128, 90, 4, UI_BORDER);
-
-  if (voiceState == VoiceState::IDLE) {
-    uiCanvas.setTextDatum(top_left);
-    uiCanvas.setTextSize(1);
-    if (voiceInputMode == VoiceInputMode::ALEXA) {
-      uiCanvas.setTextColor(UI_GREEN, UI_PANEL);
-      uiCanvas.drawString("Modo Alexa (Livre):", 112, 34);
-      uiCanvas.setTextColor(UI_TEXT, UI_PANEL);
-      uiCanvas.drawString("• Diga: 'Ei M5, ...'", 112, 48);
-      uiCanvas.drawString("• 'desligue o ar'", 112, 62);
-      uiCanvas.drawString("• 'ligue a TV'", 112, 76);
-      uiCanvas.setTextColor(UI_MUTED, UI_PANEL);
-      uiCanvas.drawString("[B] Muda para PTT", 112, 96);
-    } else {
-      uiCanvas.setTextColor(UI_CYAN, UI_PANEL);
-      uiCanvas.drawString("Push-To-Talk (PTT):", 112, 34);
-      uiCanvas.setTextColor(UI_TEXT, UI_PANEL);
-      uiCanvas.drawString("• Aperte [A] p/ falar", 112, 48);
-      uiCanvas.drawString("• Aperte [A] p/ enviar", 112, 62);
-      uiCanvas.drawString("• Gravacao ate 30s", 112, 76);
-      uiCanvas.setTextColor(UI_MUTED, UI_PANEL);
-      uiCanvas.drawString("[B] Muda p/ ALEXA", 112, 96);
-    }
-
-  } else if (voiceState == VoiceState::LISTENING) {
-    uiCanvas.setTextDatum(top_left);
-    uiCanvas.setTextSize(1);
-    if (voiceInputMode == VoiceInputMode::ALEXA) {
-      uiCanvas.setTextColor(UI_GREEN, UI_PANEL);
-      uiCanvas.drawString("Escuta Continua:", 112, 34);
-      if (!voxSpeechDetected) {
-        uiCanvas.setTextColor(UI_CYAN, UI_PANEL);
-        uiCanvas.drawString("Aguardando 'Ei M5'", 112, 52);
-        uiCanvas.setTextColor(UI_MUTED, UI_PANEL);
-        uiCanvas.drawString("Fale seu comando.", 112, 70);
-      } else {
-        if (voxSilenceStart == 0) {
-          uiCanvas.setTextColor(UI_GREEN, UI_PANEL);
-          uiCanvas.drawString("Voz Ativa...", 112, 52);
-        } else {
-          uint32_t sElapsed = millis() - voxSilenceStart;
-          float sSec = sElapsed / 1000.0f;
-          char cdBuf[24];
-          snprintf(cdBuf, sizeof(cdBuf), "Silencio: %.1fs/2.0s", sSec);
-          uiCanvas.setTextColor(UI_YELLOW, UI_PANEL);
-          uiCanvas.drawString(cdBuf, 112, 52);
-
-          int cW = constrain((int)((sElapsed * 110) / VOX_SILENCE_COOLDOWN_MS), 0, 110);
-          uiCanvas.drawRoundRect(112, 68, 114, 7, 2, UI_BORDER);
-          uiCanvas.fillRect(114, 70, cW, 3, UI_YELLOW);
-        }
-      }
-      uiCanvas.setTextColor(UI_MUTED, UI_PANEL);
-      uiCanvas.drawString("[B] Alterna p/ PTT", 112, 94);
-    } else {
+    if (voxSpeechDetected && voxSilenceStart > 0) {
+      uint32_t sElapsed = millis() - voxSilenceStart;
+      float sSec = sElapsed / 1000.0f;
+      char cdBuf[32];
+      snprintf(cdBuf, sizeof(cdBuf), "Silencio: %.2fs / 0.6s", sSec);
       uiCanvas.setTextColor(UI_YELLOW, UI_PANEL);
-      uiCanvas.drawString("Gravando (PTT):", 112, 34);
-      uiCanvas.setTextColor(UI_TEXT, UI_PANEL);
-      uiCanvas.drawString("Fale sua pergunta", 112, 52);
-      uiCanvas.drawString("no microfone.", 112, 66);
-      uiCanvas.setTextColor(UI_CYAN, UI_PANEL);
-      uiCanvas.drawString("Clique [A] p/ enviar", 112, 92);
+      uiCanvas.drawString(cdBuf, 120, 98);
+
+      int cW = constrain((int)((sElapsed * 160) / VOX_SILENCE_COOLDOWN_MS), 0, 160);
+      uiCanvas.drawRoundRect(40, 106, 160, 5, 2, UI_BORDER);
+      uiCanvas.fillRect(40, 106, cW, 5, UI_YELLOW);
+    } else {
+      uiCanvas.setTextColor(UI_MUTED, UI_PANEL);
+      uiCanvas.drawString("Fale com o M5Stick...", 120, 98);
     }
 
   } else if (voiceState == VoiceState::THINKING) {
-    uiCanvas.setTextDatum(top_left);
+    uiCanvas.setTextDatum(middle_center);
     uiCanvas.setTextSize(1);
     uiCanvas.setTextColor(UI_CYAN, UI_PANEL);
-    uiCanvas.drawString("Processando...", 112, 36);
+    uiCanvas.drawString("PROCESSANDO COMANDO NO PC...", 120, 36);
 
     if (voiceTranscription.length() > 0) {
-      uiCanvas.setTextColor(UI_YELLOW, UI_PANEL);
+      uiCanvas.fillRoundRect(12, 48, 216, 22, 3, UI_PANEL_ALT);
+      uiCanvas.drawRoundRect(12, 48, 216, 22, 3, UI_SELECTED);
+      uiCanvas.setTextColor(UI_YELLOW, UI_PANEL_ALT);
       String tShown = "\"" + voiceTranscription + "\"";
-      if (tShown.length() > 18) tShown = tShown.substring(0, 16) + "..";
-      uiCanvas.drawString(tShown, 112, 56);
-    } else {
-      uiCanvas.setTextColor(UI_MUTED, UI_PANEL);
-      uiCanvas.drawString("Executando no PC...", 112, 56);
+      if (uiCanvas.textWidth(tShown) > 200) tShown = tShown.substring(0, 26) + "..\"";
+      uiCanvas.drawString(tShown, 120, 59);
     }
 
-    uiCanvas.setTextColor(UI_TEXT, UI_PANEL);
-    uiCanvas.drawString("Aguarde retorno.", 112, 82);
+    int pW = ((millis() / 15) % 160) + 12;
+    uiCanvas.drawRoundRect(36, 78, 168, 6, 2, UI_BORDER);
+    uiCanvas.fillRect(38, 80, min(164, pW), 2, UI_CYAN);
+
+    uiCanvas.setTextColor(UI_MUTED, UI_PANEL);
+    uiCanvas.drawString("Executando automacao / IA...", 120, 98);
   }
 
   // Rodapé no Canvas
@@ -5279,11 +5217,19 @@ void processVoiceAiScreen() {
     if (voiceState == VoiceState::RESULT) {
       if (voiceScrollLine >= 2) {
         voiceScrollLine -= 2;
+        redraw = true;
+        return;
       } else {
         voiceScrollLine = 0;
+        if (voiceMicRecordingActive) {
+          voiceMicRecordingActive = false;
+          M5.Mic.end();
+          M5.Speaker.begin();
+        }
+        voiceState = VoiceState::IDLE;
+        goBack();
+        return;
       }
-      redraw = true;
-      return;
     } else {
       if (voiceMicRecordingActive) {
         voiceMicRecordingActive = false;

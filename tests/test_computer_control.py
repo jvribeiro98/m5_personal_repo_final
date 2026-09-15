@@ -109,6 +109,37 @@ class CommandTests(unittest.TestCase):
             self.assertIsNone(self.agent.handle_computer_use(command))
         self.assertEqual(self.desktop.mock_calls, [])
 
+    def test_music_playback_commands_open_youtube_search(self):
+        for cmd in ("toque coldplay", "toca queen", "coloque beatles", "bota lofi"):
+            with self.subTest(cmd=cmd):
+                self.browser.reset_mock()
+                result = self.agent.handle_computer_use(cmd)
+                self.assertEqual(result["type"], "RESULT")
+                self.assertEqual(result["title"], "BUSCA YOUTUBE")
+                self.assertTrue(self.browser.called)
+                self.assertIn("youtube.com/results?", self.browser.call_args.args[0])
+
+    def test_lock_workstation_command(self):
+        for cmd in ("bloquear tela", "bloqueia o pc", "travar tela"):
+            with self.subTest(cmd=cmd):
+                self.desktop.reset_mock()
+                result = self.agent.handle_computer_use(cmd)
+                self.assertEqual(result["type"], "RESULT")
+                self.assertEqual(result["title"], "PC BLOQUEADO")
+                self.desktop.lock_workstation.assert_called_once_with()
+
+    def test_app_launch_commands(self):
+        result = self.agent.handle_computer_use("abrir calculadora")
+        self.assertEqual(result["type"], "RESULT")
+        self.assertEqual(result["title"], "CALCULADORA")
+        self.process.assert_called_once_with(["calc.exe"])
+
+    def test_unknown_app_returns_error_and_does_not_pass_through(self):
+        result = self.agent.handle_computer_use("abrir aplicativo_inexistente_xyz_99")
+        self.assertEqual(result["type"], "RESULT")
+        self.assertEqual(result["title"], "ERRO")
+        self.assertFalse(result["auto_resume"])
+
 
 class Win32Tests(unittest.TestCase):
     def setUp(self):

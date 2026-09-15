@@ -37,12 +37,13 @@ VK_MAPPING = {
     'pageup': 0x21, 'pagedown': 0x22, 'ctrl': 0x11, 'control': 0x11,
     'alt': 0x12, 'shift': 0x10, 'win': 0x5B, 'windows': 0x5B,
     'vol_up': 0xAF, 'vol_down': 0xAE, 'vol_mute': 0xAD,
-    'media_play_pause': 0xB3, 'browser_back': 0xA6,
-    'browser_forward': 0xA7, 'browser_refresh': 0xA8,
+    'media_play_pause': 0xB3, 'media_next': 0xB0, 'media_prev': 0xB1, 'media_stop': 0xB2,
+    'browser_back': 0xA6, 'browser_forward': 0xA7, 'browser_refresh': 0xA8,
     **{f'f{i}': 0x6F + i for i in range(1, 25)},
 }
 _EXTENDED_KEYS = {0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28,
-                  0x2D, 0x2E, 0x5B, 0xA6, 0xA7, 0xA8, 0xAD, 0xAE, 0xAF, 0xB3}
+                  0x2D, 0x2E, 0x5B, 0xA6, 0xA7, 0xA8, 0xAD, 0xAE, 0xAF,
+                  0xB0, 0xB1, 0xB2, 0xB3}
 
 
 class POINT(ctypes.Structure):
@@ -110,6 +111,7 @@ if user32 is not None:
     _signature(user32, "GetForegroundWindow", HANDLE)
     _signature(user32, "GetWindowTextLengthW", ctypes.c_int, HANDLE)
     _signature(user32, "GetWindowTextW", ctypes.c_int, HANDLE, ctypes.c_wchar_p, ctypes.c_int)
+    _signature(user32, "LockWorkStation", BOOL)
     _signature(user32, "GetDC", HANDLE, HANDLE)
     _signature(user32, "ReleaseDC", ctypes.c_int, HANDLE, HANDLE)
     _signature(gdi32, "CreateCompatibleDC", HANDLE, HANDLE)
@@ -323,6 +325,24 @@ def volume_mute():
 
 def media_play_pause():
     key_press("media_play_pause")
+
+
+def media_next_track():
+    key_press("media_next")
+
+
+def media_prev_track():
+    key_press("media_prev")
+
+
+def media_stop():
+    key_press("media_stop")
+
+
+def lock_workstation():
+    _require_windows()
+    if not user32.LockWorkStation():
+        raise _win32_error("LockWorkStation")
 
 
 def get_active_window_title():

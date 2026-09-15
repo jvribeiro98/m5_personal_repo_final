@@ -38,9 +38,9 @@ try:
 except (ImportError, OSError, AttributeError):
     computer_use_agent = None
 
-AGY_BIN = os.environ.get('M5_AGY_BIN', shutil.which('agy') or os.path.join(
-    os.environ.get('LOCALAPPDATA', os.path.expanduser('~')), 'agy', 'bin', 'agy.exe'))
-AGY_MODEL = os.environ.get('M5_AGY_MODEL', '')
+_NATIVE_AGY = os.path.join(os.environ.get('LOCALAPPDATA', os.path.expanduser('~')), 'agy', 'bin', 'agy.exe')
+AGY_BIN = os.environ.get('M5_AGY_BIN', _NATIVE_AGY if os.path.isfile(_NATIVE_AGY) else (shutil.which('agy') or 'agy'))
+AGY_MODEL = os.environ.get('M5_AGY_MODEL', 'gemini-3.8-flash-low')
 CHROME_PATH = os.environ.get('M5_CHROME_PATH', os.path.join(
     os.environ.get('PROGRAMFILES', r'C:\Program Files'), 'Google', 'Chrome', 'Application', 'chrome.exe'))
 CODE_CMD = os.environ.get('M5_CODE_CMD', shutil.which('cursor') or shutil.which('code') or '')
@@ -168,17 +168,21 @@ def find_m5_port():
     return matches[0] if len(matches) == 1 else None
 
 
-def query_agy_agent(prompt):
+def query_agy_agent(prompt, on_progress=None):
+    if on_progress:
+        try:
+            on_progress("CONSULTANDO IA", "Processando pergunta...")
+        except Exception:
+            pass
     timeout = number_setting('M5_AGY_TIMEOUT', 30, 1, 60)
     instruction = (
-        'Assistente do M5Stick. Responda em português em até 2 frases. '
-        'Somente responda à pergunta; não execute ferramentas ou ações no computador. '
-        'Comandos de dispositivo e computador são tratados localmente pela ponte. '
+        'Você é o assistente de voz do M5Stick. Responda em português em até 2 frases curtas. '
+        'Somente responda à pergunta ou dúvida. NUNCA afirme ter executado comandos ou aberto programas. '
         'Não inclua tags IR. Pedido: ' + prompt)
     command = [AGY_BIN]
     if AGY_MODEL:
         command += ['--model', AGY_MODEL]
-    command += ['-p', instruction]
+    command += ['--disable-slash-commands', '--effort', 'low', '-p', instruction]
     try:
         response = subprocess.run(command, capture_output=True, text=True,
                                   timeout=timeout, encoding='utf-8', errors='replace')
@@ -278,9 +282,12 @@ def parse_voice_command(text, on_progress=None):
         if success is not None:
             return _result(cleaned, 'APLICATIVO' if success else 'ERRO',
                            f'{target} iniciado.' if success else f'Não foi possível abrir {target}.', success=success)
+        return _result(cleaned, 'ERRO', f'Não foi possível abrir {target}.', success=False)
     if re.match(r'^(?:que horas|hora certa|hora atual|data de hoje|que dia e hoje)\b', normalized):
         return _result(cleaned, 'HORA ATUAL', time.strftime('%H:%M:%S (%d/%m/%Y)'), 'Relógio')
-    reply, _ = query_agy_agent(cleaned)
+    if re.match(r'^(?:abra|abre|abrir|feche|fecha|fechar|inicie|inicia|iniciar|execute|executa|executar|rode|roda|rodar|clique|clica|clicar|digite|digita|digitar|pause|pausa|pausar|pare|para|parar|mute|mutar|bloqueie|bloqueia|bloquear|desligue|desliga|desligar|reinicie|reinicia|reiniciar|minimize|minimiza|minimizar|maximize|maximiza|maximizar|pule|pula|pular|avance|avanca|avancar|volte|volta|voltar|coloque|coloca|toque|toca|bota|botar)\b', normalized):
+        return _result(cleaned, 'COMANDO NÃO SUPORTADO', f'Ação não reconhecida: "{cleaned}".', success=False)
+    reply, _ = query_agy_agent(cleaned, on_progress=on_progress)
     return _result(cleaned, 'RESPOSTA AGY', reply, 'AGY')
 
 
