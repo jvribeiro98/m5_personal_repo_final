@@ -652,6 +652,13 @@ class AudioHTTPHandler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         global m5_client_ip
         m5_client_ip = self.client_address[0]
+        try:
+            cache_p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "m5_device_ip.json")
+            with open(cache_p, "w", encoding="utf-8") as f:
+                json.dump({"ip": m5_client_ip, "timestamp": time.time()}, f, indent=2)
+        except Exception:
+            pass
+
         if self.path == '/audio':
             content_length = int(self.headers.get('Content-Length', 0))
             mode = self.headers.get('X-Voice-Mode', 'ALEXA')
@@ -673,6 +680,11 @@ class AudioHTTPHandler(http.server.BaseHTTPRequestHandler):
             self.send_header('Content-Type', 'text/plain')
             self.end_headers()
             self.wfile.write(b"OK")
+        elif self.path == '/api/m5/ip':
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({"ip": m5_client_ip or "192.168.0.40"}).encode('utf-8'))
         else:
             self.send_response(404)
             self.end_headers()

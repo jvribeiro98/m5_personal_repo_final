@@ -171,6 +171,46 @@ Para utilizar o Agente IA com o modo Alexa mãos-livres ou integração com o PC
 
 ---
 
+## 🔌 Servidor MCP (Model Context Protocol) - O M5Stick como Ferramenta de IA
+
+O M5StickC Plus 2 agora atua como um **Servidor MCP (`m5stick-mcp`)** completo. Qualquer agente de IA moderno (**Antigravity**, **Claude Desktop**, **Cursor**, **Codex**, etc.) pode interagir fisicamente com o mundo real através do M5Stick:
+
+- **Mesmo com o M5Stick na cama ou no sofá via Wi-Fi**, sem você precisar tocar nele.
+- **Mesmo se o M5Stick estiver em outra tela**, o servidor WebServer interno na porta 80 processa as chamadas em segundo plano.
+
+### Ferramentas MCP Disponíveis para as IAs:
+| Ferramenta | Descrição |
+| :--- | :--- |
+| `m5_ac_power` | Ligar / desligar o Ar Samsung no quarto (IR GPIO 19) |
+| `m5_ac_set_temp` | Ajustar a temperatura do ar (ex: `target_celsius: 22` ou `direction: "up"`) |
+| `m5_tv_power` | Ligar / desligar a TV Samsung (IR GPIO 19) |
+| `m5_tv_volume` | Volume da TV (`up`, `down`, `mute`) |
+| `m5_display_message` | Exibir cartão de notificação visual na tela do M5Stick |
+| `m5_beep` | Tocar bipe sonoro no buzzer do M5Stick |
+| `m5_get_status` | Ler telemetria: % de bateria, tensão, IP, hora, temperatura ambiente e estado do Ar |
+
+### Como Conectar em Qualquer Agente de IA:
+No arquivo de configuração MCP do seu agente (ex: `mcp_config.json` ou via CLI):
+```json
+{
+  "mcpServers": {
+    "m5stick": {
+      "command": "python",
+      "args": ["-u", "caminho\\para\\m5_mcp_server.py"],
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      }
+    }
+  }
+}
+```
+Ou no CLI do Antigravity:
+```bash
+agy mcp add m5stick python -u caminho\para\m5_mcp_server.py
+```
+
+---
+
 ## 📡 Instalação Direta pelo Navegador (Web Flash)
 
 Você pode instalar ou atualizar o firmware diretamente no seu M5StickC Plus2 sem precisar de Arduino IDE ou compiladores:
@@ -216,6 +256,7 @@ arduino-cli upload -p COM3 --fqbn esp32:esp32:m5stack_stickc_plus2 firmware
 │   ├── M5StickBleMouse.h     # Driver NimBLE BLE HID Mouse otimizado
 │   ├── MouseCalibration.h   # Algoritmo de calibração de repouso e zero-drift
 │   └── GestureAI.h           # Reconhecedor de gestos IMU 3D
+├── m5_mcp_server.py          # Servidor MCP Oficial (JSON-RPC 2.0 Stdio) para IAs
 ├── m5_agent_bridge.py        # Ponte Python v8.0 de Voz e Wake-Word Alexa
 ├── computer_use_agent.py     # Agente de Computer Use (Mídia, YouTube, Rolagem, Apps)
 ├── os_controller.py          # Controlador nativo do Windows (Win32 GDI, Mouse, Teclas)
