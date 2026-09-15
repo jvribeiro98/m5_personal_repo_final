@@ -402,17 +402,30 @@ enum class VoiceState : uint8_t {
   RESULT
 };
 
+enum class VoiceInputMode : uint8_t {
+  ALEXA = 0, // Modo Alexa: Mãos-livres contínuo com Wake-Word ("Ei M5")
+  PTT = 1    // Push-To-Talk: Clique [A] para falar, Clique [A] para enviar
+};
+
 VoiceState voiceState = VoiceState::IDLE;
-String voiceActiveAgent = "IA Geral";
+VoiceInputMode voiceInputMode = VoiceInputMode::ALEXA;
+String voiceActiveAgent = "AGY";
 String voiceTranscription = "";
 String voiceResultTitle = "";
 String voiceResultBody = "";
 int voiceScrollLine = 0;
 uint8_t voiceWavePhase = 0;
 uint32_t voiceAnimTimer = 0;
+bool voiceBridgeConnected = true;
 
+// Variáveis do modo Alexa / VOX (Detecção de Fala e Cooldown de Silêncio)
+bool voxSpeechDetected = false;
+uint32_t voxSilenceStart = 0;
+static constexpr uint32_t VOX_SILENCE_COOLDOWN_MS = 2000; // 2.0s de silêncio contínuo
+
+// Áudio: 16000Hz, 16-bit mono. 30 segundos no PSRAM (960.000 bytes)
 static constexpr size_t VOICE_SAMPLE_RATE = 16000;
-static constexpr size_t VOICE_MAX_SECS = 12;
+static constexpr size_t VOICE_MAX_SECS = 30;
 static constexpr size_t VOICE_BUFFER_BYTES = VOICE_SAMPLE_RATE * VOICE_MAX_SECS * sizeof(int16_t);
 static int16_t* voiceAudioBuffer = nullptr;
 static size_t voiceRecordedSamples = 0;
@@ -421,12 +434,20 @@ static int pcBridgePort = 5000;
 static bool voiceMicRecordingActive = false;
 static uint32_t lastVoiceResultAt = 0;
 
+// Canvas de Double-Buffering (Padrão Bruce / CatHack para 60 FPS sem flicker)
+static M5Canvas uiCanvas(&M5.Display);
+static bool uiCanvasReady = false;
+
+void ensureUiCanvas();
 void drawVoiceAiScreen();
 void processVoiceAiScreen();
 void initVoiceAiScreen();
 void startVoiceRecording();
 void stopVoiceRecordingAndSend();
 void parseVoiceAiResponse(const String& line);
+void executeLocalIrCommand(const String& cmd);
+int countWrappedTextLines(int maxW, const String& text);
+void drawWrappedTextCanvas(M5Canvas& c, int x, int y, int maxW, int maxLines, int startLine, const String& text, uint16_t color);
 void playWandChime();
 void playFailSound();
 void drawWrappedText(int x, int y, int maxW, int maxLines, int startLine, const String& text, uint16_t color);
@@ -3342,39 +3363,45 @@ void drawFooter() {
     return;
   }
 
-  // Footer especifico para Agente IA
+    // Footer especifico para Agente IA
   if (screen == Screen::VOICE_AI) {
-    display.fillRoundRect(6, 121, 14, 11, 2, UI_ORANGE);
+    display.fillRoundRect(4, 121, 14, 11, 2, UI_ORANGE);
     display.setTextColor(UI_BG, UI_ORANGE);
     display.setTextDatum(middle_center);
-    display.drawString("A", 13, 126);
+    display.drawString("A", 11, 126);
     display.setTextColor(UI_TEXT, UI_BG);
     display.setTextDatum(middle_left);
     if (voiceState == VoiceState::LISTENING) {
-      display.drawString("Enviar", 23, 126);
+      display.drawString("Enviar", 21, 126);
     } else {
-      display.drawString("Falar", 23, 126);
+      display.drawString("Falar", 21, 126);
     }
 
-    display.fillRoundRect(80, 121, 14, 11, 2, UI_CYAN);
+    display.fillRoundRect(66, 121, 14, 11, 2, UI_CYAN);
     display.setTextColor(UI_BG, UI_CYAN);
     display.setTextDatum(middle_center);
-    display.drawString("B", 87, 126);
+    display.drawString("B", 73, 126);
     display.setTextColor(UI_TEXT, UI_BG);
     display.setTextDatum(middle_left);
     if (voiceState == VoiceState::RESULT) {
-      display.drawString("Rolar", 97, 126);
+      display.drawString("▼ Descer", 83, 126);
+    } else if (voiceState == VoiceState::IDLE) {
+      display.drawString(voiceInputMode == VoiceInputMode::PTT ? "Modo: PTT" : "Modo: VOX", 83, 126);
     } else {
-      display.drawString("Limpar", 97, 126);
+      display.drawString("Cancelar", 83, 126);
     }
 
-    display.fillRoundRect(150, 121, 14, 11, 2, UI_MUTED);
+    display.fillRoundRect(152, 121, 14, 11, 2, UI_MUTED);
     display.setTextColor(UI_BG, UI_MUTED);
     display.setTextDatum(middle_center);
-    display.drawString("C", 157, 126);
+    display.drawString("C", 159, 126);
     display.setTextColor(UI_TEXT, UI_BG);
     display.setTextDatum(middle_left);
-    display.drawString("Voltar", 167, 126);
+    if (voiceState == VoiceState::RESULT) {
+      display.drawString("▲ Subir", 169, 126);
+    } else {
+      display.drawString("Voltar", 169, 126);
+    }
     return;
   }
 
@@ -4391,21 +4418,69 @@ void playFailSound() {
   }
 }
 
+void ensureUiCanvas() {
+  if (!uiCanvasReady) {
+    uiCanvas.setColorDepth(16);
+    if (psramFound()) {
+      uiCanvas.setPsram(true);
+    }
+    uiCanvas.createSprite(240, 135);
+    uiCanvasReady = true;
+  }
+}
+
+void executeLocalIrCommand(const String& cmd) {
+  Serial.printf("[VOICE IR] Disparando comando IR fisico no GPIO 19: %s\n", cmd.c_str());
+  if (cmd == "AC_POWER") {
+    activeAc = 0; // Ar Samsung
+    executeAcAction(7); // Toggle Power
+  } else if (cmd == "AC_TEMP_UP") {
+    activeAc = 0;
+    executeAcAction(1); // Temp +
+  } else if (cmd == "AC_TEMP_DOWN") {
+    activeAc = 0;
+    executeAcAction(0); // Temp -
+  } else if (cmd == "TV_POWER") {
+    activeTv = 0; // TV Samsung
+    sendTvCommand(TV_POWER);
+  } else if (cmd == "TV_VOL_UP") {
+    activeTv = 0;
+    sendTvCommand(TV_VOL_UP);
+  } else if (cmd == "TV_VOL_DOWN") {
+    activeTv = 0;
+    sendTvCommand(TV_VOL_DOWN);
+  } else if (cmd == "TV_MUTE") {
+    activeTv = 0;
+    sendTvCommand(TV_MUTE);
+  }
+}
+
 void initVoiceAiScreen() {
+  ensureUiCanvas();
   voiceState = VoiceState::IDLE;
   voiceScrollLine = 0;
   voiceTranscription = "";
   voiceResultTitle = "";
   voiceResultBody = "";
+  voxSpeechDetected = false;
+  voxSilenceStart = 0;
+
+  Preferences prefs;
+  if (prefs.begin("m5p_voice", true)) {
+    voiceInputMode = (VoiceInputMode)prefs.getUChar("v_mode", (uint8_t)VoiceInputMode::ALEXA);
+    prefs.end();
+  }
+
   if (!voiceAudioBuffer) {
     if (psramFound()) {
       voiceAudioBuffer = (int16_t*)ps_malloc(VOICE_BUFFER_BYTES);
     }
     if (!voiceAudioBuffer) {
-      voiceAudioBuffer = (int16_t*)heap_caps_malloc(VOICE_BUFFER_BYTES, MALLOC_CAP_8BIT);
+      size_t fb = VOICE_SAMPLE_RATE * 8 * sizeof(int16_t);
+      voiceAudioBuffer = (int16_t*)heap_caps_malloc(fb, MALLOC_CAP_8BIT);
     }
     if (!voiceAudioBuffer) {
-      voiceAudioBuffer = (int16_t*)malloc(VOICE_BUFFER_BYTES);
+      voiceAudioBuffer = (int16_t*)malloc(VOICE_SAMPLE_RATE * 4 * sizeof(int16_t));
     }
   }
   voiceRecordedSamples = 0;
@@ -4413,9 +4488,16 @@ void initVoiceAiScreen() {
   auto mic_cfg = M5.Mic.config();
   mic_cfg.magnification = 48;
   M5.Mic.config(mic_cfg);
-  Serial.printf("[VOICE] Tela IA iniciada. Buffer: %p (PSRAM=%d)\n", voiceAudioBuffer, psramFound());
+
+  Serial.printf("[VOICE] Tela IA iniciada. Modo: %s | Buffer: %p (PSRAM=%d)\n",
+                voiceInputMode == VoiceInputMode::ALEXA ? "ALEXA (MAOS-LIVRES)" : "PTT",
+                voiceAudioBuffer, psramFound());
   Serial.println("VOICE_READY");
   redraw = true;
+
+  if (voiceInputMode == VoiceInputMode::ALEXA) {
+    startVoiceRecording();
+  }
 }
 
 String extractJsonField(const String& json, const String& key) {
@@ -4449,6 +4531,21 @@ void parseVoiceAiResponse(const String& rawLine) {
   String line = rawLine;
   line.trim();
   if (line.startsWith("{") && line.endsWith("}")) {
+    if (line.indexOf("\"type\":\"IGNORE\"") != -1) {
+      Serial.println("[VOICE] Audio descartado pelo PC (sem 'Ei M5'). Continuando escuta...");
+      voxSpeechDetected = false;
+      voxSilenceStart = 0;
+      voiceRecordedSamples = 0;
+      redraw = true;
+      return;
+    }
+
+    // Se houver comando infravermelho de hardware, executa direto no GPIO 19!
+    String irCmd = extractJsonField(line, "ir");
+    if (irCmd.length() > 0) {
+      executeLocalIrCommand(irCmd);
+    }
+
     String t = extractJsonField(line, "title");
     if (t.length() > 0) voiceResultTitle = t;
 
@@ -4463,60 +4560,64 @@ void parseVoiceAiResponse(const String& rawLine) {
 
     voiceState = VoiceState::RESULT;
     voiceScrollLine = 0;
+    voiceBridgeConnected = true;
     lastVoiceResultAt = millis();
+    voxSpeechDetected = false;
+    voxSilenceStart = 0;
+    voiceRecordedSamples = 0;
     playWandChime();
     redraw = true;
-    Serial.printf("[VOICE PARSED] Titulo: %s | Agente: %s | Texto: %s | Resp: %s\n",
-                  voiceResultTitle.c_str(), voiceActiveAgent.c_str(), voiceTranscription.c_str(), voiceResultBody.c_str());
+    Serial.printf("[VOICE PARSED] Titulo: %s | Agente: %s | Texto: %s | IR: %s\n",
+                  voiceResultTitle.c_str(), voiceActiveAgent.c_str(), voiceTranscription.c_str(), irCmd.c_str());
   }
 }
 
 static uint32_t voiceRecStartTime = 0;
 
 void startVoiceRecording() {
-  if (voiceState == VoiceState::LISTENING) return;
   voiceState = VoiceState::LISTENING;
   voiceRecordedSamples = 0;
-  voiceTranscription = "";
-  voiceResultTitle = "";
-  voiceResultBody = "";
   voiceScrollLine = 0;
   voiceWavePhase = 0;
+  voxSpeechDetected = false;
+  voxSilenceStart = 0;
   voiceRecStartTime = millis();
 
-  if (M5.Speaker.isEnabled()) M5.Speaker.tone(1200, 50);
-  delay(60);
-  M5.Speaker.end();
-  M5.Mic.begin();
-  voiceMicRecordingActive = true;
-  Serial.println("[VOICE] Gravacao iniciada pelo microfone SPM1423...");
+  if (!voiceMicRecordingActive) {
+    if (M5.Speaker.isEnabled()) M5.Speaker.tone(1200, 30);
+    delay(40);
+    M5.Speaker.end();
+    M5.Mic.begin();
+    voiceMicRecordingActive = true;
+  }
+
+  Serial.printf("[VOICE] Escuta ativa (Modo: %s)...\n",
+                voiceInputMode == VoiceInputMode::ALEXA ? "ALEXA (MAOS-LIVRES)" : "PTT");
   redraw = true;
-  drawScreen();
 }
 
 void stopVoiceRecordingAndSend() {
-  if (voiceState != VoiceState::LISTENING) return;
   voiceMicRecordingActive = false;
   M5.Mic.end();
   M5.Speaker.begin();
-  if (M5.Speaker.isEnabled()) M5.Speaker.tone(1600, 50);
+  if (M5.Speaker.isEnabled()) M5.Speaker.tone(1600, 40);
 
-  // Mostra imediatamente o estado de envio/processamento na tela
-  voiceState = VoiceState::THINKING;
+  // Se não estiver em RESULT, mostra tela de THINKING.
+  // Se já estiver em RESULT, apenas atualiza o indicador no topo para que a resposta anterior não suma!
+  if (voiceState != VoiceState::RESULT) {
+    voiceState = VoiceState::THINKING;
+  }
   redraw = true;
   drawScreen();
 
   uint32_t recDurationMs = millis() - voiceRecStartTime;
-  Serial.printf("[VOICE] Gravacao finalizada: %u amostras (%ums)\n", (unsigned int)voiceRecordedSamples, recDurationMs);
+  Serial.printf("[VOICE] Trecho captado: %u amostras (%ums)\n", (unsigned int)voiceRecordedSamples, recDurationMs);
 
-  // Se gravou menos de 400ms por toque rápido acidental
-  if (voiceRecordedSamples < 1200 && recDurationMs < 400) {
-    voiceResultTitle = "CLIQUE E FALE";
-    voiceResultBody = "Clique [A], fale sua frase no M5Stick e clique [A] para enviar.";
-    voiceState = VoiceState::RESULT;
-    lastVoiceResultAt = millis();
+  if (voiceRecordedSamples < 1200 && recDurationMs < 350) {
+    voxSpeechDetected = false;
+    voxSilenceStart = 0;
+    voiceRecordedSamples = 0;
     redraw = true;
-    drawScreen();
     return;
   }
 
@@ -4527,9 +4628,10 @@ void stopVoiceRecordingAndSend() {
     HTTPClient http;
     String url = "http://" + pcBridgeIp + ":" + String(pcBridgePort) + "/audio";
     http.setConnectTimeout(2500);
-    http.setTimeout(35000);
+    http.setTimeout(45000);
     if (http.begin(url)) {
       http.addHeader("Content-Type", "application/octet-stream");
+      http.addHeader("X-Voice-Mode", voiceInputMode == VoiceInputMode::ALEXA ? "ALEXA" : "PTT");
       int code = http.POST((uint8_t*)voiceAudioBuffer, voiceRecordedSamples * sizeof(int16_t));
       if (code == 200) {
         String resp = http.getString();
@@ -4539,278 +4641,522 @@ void stopVoiceRecordingAndSend() {
         sentOk = true;
       } else {
         Serial.printf("[VOICE] Falha HTTP: %d\n", code);
+        voiceBridgeConnected = false;
       }
       http.end();
     }
   }
 
   if (!sentOk && voiceAudioBuffer && voiceRecordedSamples > 0) {
-    // Fallback via Serial
-    Serial.printf("VOICE_AUDIO %u\n", (unsigned int)(voiceRecordedSamples * sizeof(int16_t)));
+    Serial.printf("VOICE_AUDIO %u %s\n",
+                  (unsigned int)(voiceRecordedSamples * sizeof(int16_t)),
+                  voiceInputMode == VoiceInputMode::ALEXA ? "ALEXA" : "PTT");
     Serial.write((const uint8_t*)voiceAudioBuffer, voiceRecordedSamples * sizeof(int16_t));
     Serial.println();
   }
 
-  // Limpa fila de toques nos botões que tenham ocorrido durante o bloqueio do HTTP
   M5.update();
   lastVoiceResultAt = millis();
+  voxSpeechDetected = false;
+  voxSilenceStart = 0;
+  voiceRecordedSamples = 0;
   redraw = true;
-  drawScreen();
 }
 
-void drawWrappedText(int x, int y, int maxW, int maxLines, int startLine, const String& text, uint16_t color) {
+int countWrappedTextLines(int maxW, const String& text) {
   auto& d = M5.Display;
   d.setTextSize(1);
-  d.setTextColor(color, UI_PANEL);
-  d.setTextDatum(top_left);
-
-  int curX = x;
-  int curY = y;
-  int lineIdx = 0;
+  int curX = 0;
+  int lines = 1;
   String word = "";
-
   for (size_t i = 0; i <= text.length(); ++i) {
     char c = (i < text.length()) ? text[i] : ' ';
     if (c == ' ' || c == '\n' || i == text.length()) {
       if (word.length() > 0) {
         int wWidth = d.textWidth(word);
-        if (curX + wWidth > x + maxW && curX > x) {
-          curX = x;
-          curY += 12;
-          lineIdx++;
-        }
-        if (lineIdx >= startLine && (lineIdx - startLine) < maxLines) {
-          d.drawString(word, curX, curY);
+        if (curX + wWidth > maxW && curX > 0) {
+          curX = 0;
+          lines++;
         }
         curX += wWidth + d.textWidth(" ");
         word = "";
       }
       if (c == '\n') {
-        curX = x;
-        curY += 12;
-        lineIdx++;
+        curX = 0;
+        lines++;
       }
     } else {
       word += c;
     }
   }
+  return lines;
+}
+
+void drawWrappedTextCanvas(M5Canvas& c, int x, int y, int maxW, int maxLines, int startLine, const String& text, uint16_t color) {
+  c.setTextSize(1);
+  c.setTextColor(color, UI_PANEL);
+  c.setTextDatum(top_left);
+
+  int curX = x;
+  int lineIdx = 0;
+  String word = "";
+
+  for (size_t i = 0; i <= text.length(); ++i) {
+    char ch = (i < text.length()) ? text[i] : ' ';
+    if (ch == ' ' || ch == '\n' || i == text.length()) {
+      if (word.length() > 0) {
+        int wWidth = c.textWidth(word);
+        if (curX + wWidth > x + maxW && curX > x) {
+          curX = x;
+          lineIdx++;
+        }
+        if (lineIdx >= startLine && (lineIdx - startLine) < maxLines) {
+          int drawY = y + (lineIdx - startLine) * 12;
+          c.drawString(word, curX, drawY);
+        }
+        curX += wWidth + c.textWidth(" ");
+        word = "";
+      }
+      if (ch == '\n') {
+        curX = x;
+        lineIdx++;
+      }
+    } else {
+      word += ch;
+    }
+  }
 }
 
 void drawVoiceAiScreen() {
-  auto& d = M5.Display;
-  drawTitle("AGENTE IA", voiceActiveAgent);
+  ensureUiCanvas();
+  uiCanvas.fillScreen(UI_BG);
 
-  // Painel Esquerdo (x: 6, y: 28, w: 96, h: 90) - Estado & Visualizador
-  d.fillRoundRect(6, 28, 96, 90, 4, UI_PANEL);
-  d.drawRoundRect(6, 28, 96, 90, 4, UI_BORDER);
+  // ============================================================
+  // TELA DE RESPOSTA DA IA (DOUBLE BUFFERING 64KB PSRAM, 60 FPS)
+  // A resposta permanece na tela para sempre enquanto escuta em background!
+  // ============================================================
+  if (voiceState == VoiceState::RESULT) {
+    uiCanvas.fillRect(0, 0, 240, 19, UI_BG);
+
+    // Bolinha de Status
+    uint16_t dotCol = UI_GREEN;
+    if (!voiceBridgeConnected) dotCol = UI_RED;
+    else if (voxSpeechDetected) dotCol = UI_YELLOW;
+    uiCanvas.fillCircle(10, 9, 4, dotCol);
+
+    uiCanvas.setTextDatum(middle_left);
+    uiCanvas.setTextSize(1);
+    uiCanvas.setTextColor(dotCol, UI_BG);
+    String topTitle = "RESPOSTA • " + (voiceActiveAgent.length() > 0 ? voiceActiveAgent : "AGY");
+    if (voxSpeechDetected) topTitle += " [OUVINDO...]";
+    uiCanvas.drawString(topTitle, 19, 9);
+
+    uiCanvas.setTextDatum(middle_right);
+    uiCanvas.setTextColor(UI_MUTED, UI_BG);
+    uiCanvas.drawString("▲[C]  ▼[B]", 234, 9);
+
+    uiCanvas.drawFastHLine(0, 19, 240, UI_BORDER);
+
+    // Painel Central Liberado (x: 4, y: 22, w: 232, h: 96)
+    uiCanvas.fillRoundRect(4, 22, 232, 96, 4, UI_PANEL);
+    uiCanvas.drawRoundRect(4, 22, 232, 96, 4, UI_BORDER);
+
+    if (voiceTranscription.length() > 0) {
+      uiCanvas.setTextDatum(top_left);
+      uiCanvas.setTextSize(1);
+      uiCanvas.setTextColor(UI_YELLOW, UI_PANEL);
+      String qStr = "> " + voiceTranscription;
+      if (uiCanvas.textWidth(qStr) > 220) qStr = qStr.substring(0, 30) + "..";
+      uiCanvas.drawString(qStr, 8, 26);
+      uiCanvas.drawFastHLine(8, 38, 224, UI_BORDER);
+
+      drawWrappedTextCanvas(uiCanvas, 8, 42, 224, 6, voiceScrollLine, voiceResultBody, UI_TEXT);
+    } else {
+      drawWrappedTextCanvas(uiCanvas, 8, 26, 224, 7, voiceScrollLine, voiceResultBody, UI_TEXT);
+    }
+
+    // Rodapé no Canvas
+    uiCanvas.fillRoundRect(4, 121, 14, 11, 2, UI_ORANGE);
+    uiCanvas.setTextColor(UI_BG, UI_ORANGE);
+    uiCanvas.setTextDatum(middle_center);
+    uiCanvas.drawString("A", 11, 126);
+    uiCanvas.setTextColor(UI_TEXT, UI_BG);
+    uiCanvas.setTextDatum(middle_left);
+    uiCanvas.drawString("Falar", 21, 126);
+
+    uiCanvas.fillRoundRect(66, 121, 14, 11, 2, UI_CYAN);
+    uiCanvas.setTextColor(UI_BG, UI_CYAN);
+    uiCanvas.setTextDatum(middle_center);
+    uiCanvas.drawString("B", 73, 126);
+    uiCanvas.setTextColor(UI_TEXT, UI_BG);
+    uiCanvas.setTextDatum(middle_left);
+    uiCanvas.drawString("▼ Descer", 83, 126);
+
+    uiCanvas.fillRoundRect(156, 121, 14, 11, 2, UI_MUTED);
+    uiCanvas.setTextColor(UI_BG, UI_MUTED);
+    uiCanvas.setTextDatum(middle_center);
+    uiCanvas.drawString("C", 163, 126);
+    uiCanvas.setTextColor(UI_TEXT, UI_BG);
+    uiCanvas.setTextDatum(middle_left);
+    uiCanvas.drawString("▲ Subir", 173, 126);
+
+    // Push atômico sem flicker
+    uiCanvas.pushSprite(0, 0);
+    return;
+  }
+
+  // ============================================================
+  // TELAS IDLE, LISTENING E THINKING
+  // ============================================================
+  uiCanvas.fillRect(0, 0, 240, 27, UI_BG);
+  uiCanvas.fillRoundRect(4, 4, 3, 18, 1, UI_SELECTED);
+  uiCanvas.setTextDatum(middle_left);
+  uiCanvas.setTextSize(2);
+  uiCanvas.setTextColor(UI_TEXT, UI_BG);
+  uiCanvas.drawString("AGENTE IA", 12, 13);
+  uiCanvas.drawFastHLine(0, 26, 240, UI_BORDER);
+
+  uiCanvas.setTextDatum(middle_right);
+  uiCanvas.setTextSize(1);
+  uiCanvas.setTextColor(UI_YELLOW, UI_BG);
+  uiCanvas.drawString(voiceActiveAgent, 234, 13);
+
+  // Painel Esquerdo (x: 6, y: 28, w: 96, h: 90)
+  uiCanvas.fillRoundRect(6, 28, 96, 90, 4, UI_PANEL);
+  uiCanvas.drawRoundRect(6, 28, 96, 90, 4, UI_BORDER);
 
   if (voiceState == VoiceState::IDLE) {
-    // Ícone de Microfone Estilizado
-    d.drawRoundRect(42, 36, 14, 20, 6, UI_CYAN);
-    d.fillRect(45, 39, 8, 14, UI_CYAN);
-    d.drawFastHLine(38, 57, 22, UI_BORDER);
-    d.drawFastVLine(49, 57, 5, UI_BORDER);
-    d.drawFastHLine(43, 62, 12, UI_BORDER);
+    uiCanvas.drawRoundRect(42, 35, 14, 18, 6, UI_CYAN);
+    uiCanvas.fillRect(45, 38, 8, 12, UI_CYAN);
+    uiCanvas.drawFastHLine(38, 55, 22, UI_BORDER);
+    uiCanvas.drawFastVLine(49, 55, 5, UI_BORDER);
+    uiCanvas.drawFastHLine(43, 60, 12, UI_BORDER);
 
-    d.fillRoundRect(12, 72, 84, 16, 3, UI_PANEL_ALT);
-    d.drawRoundRect(12, 72, 84, 16, 3, UI_CYAN);
-    d.setTextDatum(middle_center);
-    d.setTextSize(1);
-    d.setTextColor(UI_CYAN, UI_PANEL_ALT);
-    d.drawString("PRONTO", 54, 80);
+    uint16_t modeCol = (voiceInputMode == VoiceInputMode::ALEXA) ? UI_GREEN : UI_CYAN;
+    const char* modeTxt = (voiceInputMode == VoiceInputMode::ALEXA) ? "MODO ALEXA" : "MODO PTT";
+    uiCanvas.fillRoundRect(12, 68, 84, 16, 3, UI_PANEL_ALT);
+    uiCanvas.drawRoundRect(12, 68, 84, 16, 3, modeCol);
+    uiCanvas.setTextDatum(middle_center);
+    uiCanvas.setTextSize(1);
+    uiCanvas.setTextColor(modeCol, UI_PANEL_ALT);
+    uiCanvas.drawString(modeTxt, 54, 76);
 
-    d.setTextDatum(middle_center);
-    d.setTextColor(UI_MUTED, UI_PANEL);
-    d.drawString("SPM1423 MIC", 54, 102);
+    uiCanvas.setTextColor(UI_MUTED, UI_PANEL);
+    uiCanvas.drawString("[B] Trocar Modo", 54, 100);
 
   } else if (voiceState == VoiceState::LISTENING) {
-    // VU-Meter Animado (5 barras com efeito estéreo)
     constexpr int bXs[] = {22, 35, 48, 61, 74};
     constexpr int bHs[] = {12, 24, 38, 26, 14};
     for (int b = 0; b < 5; ++b) {
       int h = bHs[b] + (int)(sinf((voiceWavePhase + b * 50) * 0.1f) * 10.0f);
       h = constrain(h, 4, 38);
-      int by = 53 - h / 2;
+      int by = 51 - h / 2;
       uint16_t bCol = (b == 2) ? UI_YELLOW : ((b % 2 == 0) ? UI_CYAN : UI_GREEN);
-      d.fillRoundRect(bXs[b], by, 7, h, 2, bCol);
+      uiCanvas.fillRoundRect(bXs[b], by, 7, h, 2, bCol);
     }
 
-    d.fillRoundRect(12, 72, 84, 16, 3, UI_YELLOW);
-    d.setTextDatum(middle_center);
-    d.setTextSize(1);
-    d.setTextColor(UI_BG, UI_YELLOW);
-    d.drawString("GRAVANDO...", 54, 80);
+    uint16_t statusCol = (voiceInputMode == VoiceInputMode::ALEXA) ? UI_GREEN : UI_YELLOW;
+    uiCanvas.fillRoundRect(12, 70, 84, 16, 3, statusCol);
+    uiCanvas.setTextDatum(middle_center);
+    uiCanvas.setTextSize(1);
+    uiCanvas.setTextColor(UI_BG, statusCol);
+    if (voiceInputMode == VoiceInputMode::ALEXA) {
+      uiCanvas.drawString(voxSpeechDetected ? "FALANDO..." : "OUVINDO...", 54, 78);
+    } else {
+      uiCanvas.drawString("GRAVANDO...", 54, 78);
+    }
 
-    uint32_t elapsedMs = millis() - voiceRecStartTime;
-    float elapsedSec = elapsedMs / 1000.0f;
-    char secBuf[16];
-    snprintf(secBuf, sizeof(secBuf), "%.1fs / 10.0s", elapsedSec);
-    d.setTextDatum(middle_center);
-    d.setTextColor(UI_TEXT, UI_PANEL);
-    d.drawString(secBuf, 54, 102);
+    uiCanvas.setTextDatum(middle_center);
+    uiCanvas.setTextColor(UI_TEXT, UI_PANEL);
+    if (voiceInputMode == VoiceInputMode::ALEXA) {
+      uiCanvas.drawString("Diga: 'Ei M5'", 54, 100);
+    } else {
+      uint32_t elapsedMs = millis() - voiceRecStartTime;
+      float elapsedSec = elapsedMs / 1000.0f;
+      char secBuf[16];
+      snprintf(secBuf, sizeof(secBuf), "%.1fs / 30.0s", elapsedSec);
+      uiCanvas.drawString(secBuf, 54, 100);
+    }
 
   } else if (voiceState == VoiceState::THINKING) {
-    d.fillRoundRect(12, 38, 84, 20, 3, UI_PANEL_ALT);
-    d.drawRoundRect(12, 38, 84, 20, 3, UI_CYAN);
-    d.setTextDatum(middle_center);
-    d.setTextSize(1);
-    d.setTextColor(UI_CYAN, UI_PANEL_ALT);
-    d.drawString("ENVIANDO...", 54, 48);
+    uiCanvas.fillRoundRect(12, 38, 84, 20, 3, UI_PANEL_ALT);
+    uiCanvas.drawRoundRect(12, 38, 84, 20, 3, UI_CYAN);
+    uiCanvas.setTextDatum(middle_center);
+    uiCanvas.setTextSize(1);
+    uiCanvas.setTextColor(UI_CYAN, UI_PANEL_ALT);
+    uiCanvas.drawString("PROCESSANDO...", 54, 48);
 
-    // Barra de progresso animada
     int pW = ((millis() / 25) % 64) + 8;
-    d.drawRoundRect(16, 68, 76, 7, 2, UI_BORDER);
-    d.fillRect(18, 70, pW, 3, UI_CYAN);
+    uiCanvas.drawRoundRect(16, 68, 76, 7, 2, UI_BORDER);
+    uiCanvas.fillRect(18, 70, pW, 3, UI_CYAN);
 
-    d.setTextDatum(middle_center);
-    d.setTextColor(UI_MUTED, UI_PANEL);
-    d.drawString("PC Bridge:5000", 54, 98);
-
-  } else if (voiceState == VoiceState::RESULT) {
-    d.fillRoundRect(12, 36, 84, 20, 3, UI_GREEN);
-    d.setTextDatum(middle_center);
-    d.setTextSize(1);
-    d.setTextColor(UI_BG, UI_GREEN);
-    d.drawString("RESPOSTA", 54, 46);
-
-    d.setTextDatum(middle_center);
-    d.setTextColor(UI_YELLOW, UI_PANEL);
-    d.drawString(voiceResultTitle.substring(0, 10), 54, 72);
-
-    d.setTextColor(UI_MUTED, UI_PANEL);
-    d.drawString("[B] Rolar", 54, 98);
+    uiCanvas.setTextDatum(middle_center);
+    uiCanvas.setTextColor(UI_MUTED, UI_PANEL);
+    uiCanvas.drawString("Consultando AGY", 54, 98);
   }
 
-  // Painel Direito (x: 106, y: 28, w: 128, h: 90) - Conteúdo / Transcrição
-  d.fillRoundRect(106, 28, 128, 90, 4, UI_PANEL);
-  d.drawRoundRect(106, 28, 128, 90, 4, UI_BORDER);
+  // Painel Direito (x: 106, y: 28, w: 128, h: 90)
+  uiCanvas.fillRoundRect(106, 28, 128, 90, 4, UI_PANEL);
+  uiCanvas.drawRoundRect(106, 28, 128, 90, 4, UI_BORDER);
 
   if (voiceState == VoiceState::IDLE) {
-    d.setTextDatum(top_left);
-    d.setTextSize(1);
-    d.setTextColor(UI_YELLOW, UI_PANEL);
-    d.drawString("Comandos p/ AGY:", 112, 34);
-
-    d.setTextColor(UI_CYAN, UI_PANEL);
-    d.drawString("• 'abrir codex'", 112, 48);
-    d.drawString("• 'abrir chrome'", 112, 60);
-    d.drawString("• 'abrir terminal'", 112, 72);
-
-    d.setTextColor(UI_MUTED, UI_PANEL);
-    d.drawString("• 'crie um arquivo...'", 112, 85);
-    d.drawString("• 'perguntas livres...'", 112, 98);
+    uiCanvas.setTextDatum(top_left);
+    uiCanvas.setTextSize(1);
+    if (voiceInputMode == VoiceInputMode::ALEXA) {
+      uiCanvas.setTextColor(UI_GREEN, UI_PANEL);
+      uiCanvas.drawString("Modo Alexa (Livre):", 112, 34);
+      uiCanvas.setTextColor(UI_TEXT, UI_PANEL);
+      uiCanvas.drawString("• Diga: 'Ei M5, ...'", 112, 48);
+      uiCanvas.drawString("• 'desligue o ar'", 112, 62);
+      uiCanvas.drawString("• 'ligue a TV'", 112, 76);
+      uiCanvas.setTextColor(UI_MUTED, UI_PANEL);
+      uiCanvas.drawString("[B] Muda para PTT", 112, 96);
+    } else {
+      uiCanvas.setTextColor(UI_CYAN, UI_PANEL);
+      uiCanvas.drawString("Push-To-Talk (PTT):", 112, 34);
+      uiCanvas.setTextColor(UI_TEXT, UI_PANEL);
+      uiCanvas.drawString("• Aperte [A] p/ falar", 112, 48);
+      uiCanvas.drawString("• Aperte [A] p/ enviar", 112, 62);
+      uiCanvas.drawString("• Gravacao ate 30s", 112, 76);
+      uiCanvas.setTextColor(UI_MUTED, UI_PANEL);
+      uiCanvas.drawString("[B] Muda p/ ALEXA", 112, 96);
+    }
 
   } else if (voiceState == VoiceState::LISTENING) {
-    d.setTextDatum(top_left);
-    d.setTextSize(1);
-    d.setTextColor(UI_YELLOW, UI_PANEL);
-    d.drawString("Ouvindo no M5Stick:", 112, 36);
+    uiCanvas.setTextDatum(top_left);
+    uiCanvas.setTextSize(1);
+    if (voiceInputMode == VoiceInputMode::ALEXA) {
+      uiCanvas.setTextColor(UI_GREEN, UI_PANEL);
+      uiCanvas.drawString("Escuta Continua:", 112, 34);
+      if (!voxSpeechDetected) {
+        uiCanvas.setTextColor(UI_CYAN, UI_PANEL);
+        uiCanvas.drawString("Aguardando 'Ei M5'", 112, 52);
+        uiCanvas.setTextColor(UI_MUTED, UI_PANEL);
+        uiCanvas.drawString("Fale seu comando.", 112, 70);
+      } else {
+        if (voxSilenceStart == 0) {
+          uiCanvas.setTextColor(UI_GREEN, UI_PANEL);
+          uiCanvas.drawString("Voz Ativa...", 112, 52);
+        } else {
+          uint32_t sElapsed = millis() - voxSilenceStart;
+          float sSec = sElapsed / 1000.0f;
+          char cdBuf[24];
+          snprintf(cdBuf, sizeof(cdBuf), "Silencio: %.1fs/2.0s", sSec);
+          uiCanvas.setTextColor(UI_YELLOW, UI_PANEL);
+          uiCanvas.drawString(cdBuf, 112, 52);
 
-    d.setTextColor(UI_TEXT, UI_PANEL);
-    d.drawString("Fale sua frase proximo", 112, 54);
-    d.drawString("ao topo do aparelho.", 112, 68);
-
-    d.setTextColor(UI_CYAN, UI_PANEL);
-    d.drawString("Clique [A] p/ enviar", 112, 92);
+          int cW = constrain((int)((sElapsed * 110) / VOX_SILENCE_COOLDOWN_MS), 0, 110);
+          uiCanvas.drawRoundRect(112, 68, 114, 7, 2, UI_BORDER);
+          uiCanvas.fillRect(114, 70, cW, 3, UI_YELLOW);
+        }
+      }
+      uiCanvas.setTextColor(UI_MUTED, UI_PANEL);
+      uiCanvas.drawString("[B] Alterna p/ PTT", 112, 94);
+    } else {
+      uiCanvas.setTextColor(UI_YELLOW, UI_PANEL);
+      uiCanvas.drawString("Gravando (PTT):", 112, 34);
+      uiCanvas.setTextColor(UI_TEXT, UI_PANEL);
+      uiCanvas.drawString("Fale sua pergunta", 112, 52);
+      uiCanvas.drawString("no microfone.", 112, 66);
+      uiCanvas.setTextColor(UI_CYAN, UI_PANEL);
+      uiCanvas.drawString("Clique [A] p/ enviar", 112, 92);
+    }
 
   } else if (voiceState == VoiceState::THINKING) {
-    d.setTextDatum(top_left);
-    d.setTextSize(1);
-    d.setTextColor(UI_CYAN, UI_PANEL);
-    d.drawString("Processando no AGY...", 112, 36);
+    uiCanvas.setTextDatum(top_left);
+    uiCanvas.setTextSize(1);
+    uiCanvas.setTextColor(UI_CYAN, UI_PANEL);
+    uiCanvas.drawString("Processando...", 112, 36);
 
     if (voiceTranscription.length() > 0) {
-      d.setTextColor(UI_YELLOW, UI_PANEL);
+      uiCanvas.setTextColor(UI_YELLOW, UI_PANEL);
       String tShown = "\"" + voiceTranscription + "\"";
       if (tShown.length() > 18) tShown = tShown.substring(0, 16) + "..";
-      d.drawString(tShown, 112, 56);
+      uiCanvas.drawString(tShown, 112, 56);
     } else {
-      d.setTextColor(UI_MUTED, UI_PANEL);
-      d.drawString("Executando no PC...", 112, 56);
+      uiCanvas.setTextColor(UI_MUTED, UI_PANEL);
+      uiCanvas.drawString("Executando no PC...", 112, 56);
     }
 
-    d.setTextColor(UI_TEXT, UI_PANEL);
-    d.drawString("Aguarde o agente AGY", 112, 82);
-
-  } else if (voiceState == VoiceState::RESULT) {
-    d.setTextDatum(top_left);
-    d.setTextSize(1);
-
-    if (voiceTranscription.length() > 0) {
-      d.setTextColor(UI_YELLOW, UI_PANEL);
-      String qStr = "> " + voiceTranscription;
-      if (qStr.length() > 20) qStr = qStr.substring(0, 18) + "..";
-      d.drawString(qStr, 112, 33);
-      d.drawFastHLine(112, 44, 116, UI_BORDER);
-    }
-
-    d.setTextColor(UI_TEXT, UI_PANEL);
-    drawWrappedText(112, 48, 116, 5, voiceScrollLine, voiceResultBody, UI_TEXT);
+    uiCanvas.setTextColor(UI_TEXT, UI_PANEL);
+    uiCanvas.drawString("Aguarde retorno.", 112, 82);
   }
+
+  // Rodapé no Canvas
+  uiCanvas.fillRoundRect(4, 121, 14, 11, 2, UI_ORANGE);
+  uiCanvas.setTextColor(UI_BG, UI_ORANGE);
+  uiCanvas.setTextDatum(middle_center);
+  uiCanvas.drawString("A", 11, 126);
+  uiCanvas.setTextColor(UI_TEXT, UI_BG);
+  uiCanvas.setTextDatum(middle_left);
+  if (voiceState == VoiceState::LISTENING) {
+    uiCanvas.drawString(voiceInputMode == VoiceInputMode::ALEXA ? "Ouvindo" : "Enviar", 21, 126);
+  } else {
+    uiCanvas.drawString("Falar", 21, 126);
+  }
+
+  uiCanvas.fillRoundRect(66, 121, 14, 11, 2, UI_CYAN);
+  uiCanvas.setTextColor(UI_BG, UI_CYAN);
+  uiCanvas.setTextDatum(middle_center);
+  uiCanvas.drawString("B", 73, 126);
+  uiCanvas.setTextColor(UI_TEXT, UI_BG);
+  uiCanvas.setTextDatum(middle_left);
+  uiCanvas.drawString(voiceInputMode == VoiceInputMode::ALEXA ? "Modo: ALEXA" : "Modo: PTT", 83, 126);
+
+  uiCanvas.fillRoundRect(156, 121, 14, 11, 2, UI_MUTED);
+  uiCanvas.setTextColor(UI_BG, UI_MUTED);
+  uiCanvas.setTextDatum(middle_center);
+  uiCanvas.drawString("C", 163, 126);
+  uiCanvas.setTextColor(UI_TEXT, UI_BG);
+  uiCanvas.setTextDatum(middle_left);
+  uiCanvas.drawString("Voltar", 173, 126);
+
+  // Push do frame completo para o LCD físico sem flicker
+  uiCanvas.pushSprite(0, 0);
 }
 
 void processVoiceAiScreen() {
   lastUserActivityAt = millis();
 
-  if (buttonC.wasClicked() || buttonC.wasHeld()) {
-    if (voiceState == VoiceState::LISTENING) {
+  // ATENÇÃO: NÃO HÁ TIMER DE 6 OU 7 SEGUNDOS DERRUBANDO A TELA!
+  // A resposta permanece na tela pelo tempo que o usuário quiser.
+
+  // Botão C: Toque curto -> Rolar para CIMA (em RESULT). Segurar -> Sair para Menu Principal
+  if (buttonC.wasHeld()) {
+    if (voiceMicRecordingActive) {
       voiceMicRecordingActive = false;
       M5.Mic.end();
       M5.Speaker.begin();
-      voiceState = VoiceState::IDLE;
     }
+    voiceState = VoiceState::IDLE;
     goBack();
     return;
   }
 
-  // Botão B: se estiver em RESULT, rola o texto ou volta para IDLE
-  if (M5.BtnB.wasClicked()) {
+  if (buttonC.wasClicked()) {
     if (voiceState == VoiceState::RESULT) {
-      voiceScrollLine += 2;
-      if (voiceScrollLine > 20) voiceScrollLine = 0;
+      if (voiceScrollLine >= 2) {
+        voiceScrollLine -= 2;
+      } else {
+        voiceScrollLine = 0;
+      }
       redraw = true;
+      return;
     } else {
-      if (voiceState == VoiceState::LISTENING) {
+      if (voiceMicRecordingActive) {
         voiceMicRecordingActive = false;
         M5.Mic.end();
         M5.Speaker.begin();
       }
       voiceState = VoiceState::IDLE;
-      redraw = true;
+      goBack();
+      return;
     }
   }
 
-  // Botão A: Iniciar ou Parar gravação com proteção contra toques acidentais
-  if (M5.BtnA.wasPressed()) {
-    if (voiceState == VoiceState::IDLE) {
-      startVoiceRecording();
-    } else if (voiceState == VoiceState::RESULT) {
-      // Ignora clique por 1.5 segundo após o resultado chegar para dar tempo de ler com calma
-      if (millis() - lastVoiceResultAt >= 1500) {
-        startVoiceRecording();
+  // Botão B: Rolar para BAIXO (em RESULT) ou Alternar Modo ALEXA/PTT
+  if (M5.BtnB.wasClicked()) {
+    if (voiceState == VoiceState::RESULT) {
+      int totalL = countWrappedTextLines(224, voiceResultBody);
+      if (voiceScrollLine + 3 < totalL) {
+        voiceScrollLine += 2;
       }
+      redraw = true;
+    } else {
+      voiceInputMode = (voiceInputMode == VoiceInputMode::ALEXA) ? VoiceInputMode::PTT : VoiceInputMode::ALEXA;
+      Preferences prefs;
+      if (prefs.begin("m5p_voice", false)) {
+        prefs.putUChar("v_mode", (uint8_t)voiceInputMode);
+        prefs.end();
+      }
+      playWandChime();
+      if (voiceInputMode == VoiceInputMode::ALEXA) {
+        startVoiceRecording();
+      } else {
+        voiceMicRecordingActive = false;
+        M5.Mic.end();
+        M5.Speaker.begin();
+        voiceState = VoiceState::IDLE;
+        redraw = true;
+      }
+    }
+  }
+
+  // Botão A: Iniciar gravação manual ou forçar envio
+  if (M5.BtnA.wasPressed() || M5.BtnA.wasClicked()) {
+    if (voiceState == VoiceState::IDLE || voiceState == VoiceState::RESULT) {
+      startVoiceRecording();
     } else if (voiceState == VoiceState::LISTENING) {
-      // Se já gravou pelo menos 500ms, um novo clique no Botão A para e envia!
-      if (millis() - voiceRecStartTime >= 500) {
+      if (millis() - voiceRecStartTime >= 400) {
         stopVoiceRecordingAndSend();
       }
     }
   }
 
-  // Se o usuário preferir segurar e soltar para falar:
-  if (M5.BtnA.wasReleased() && voiceState == VoiceState::LISTENING) {
+  // Modo PTT: segura e solta para falar
+  if (voiceInputMode == VoiceInputMode::PTT && M5.BtnA.wasReleased() && voiceState == VoiceState::LISTENING) {
     if (millis() - voiceRecStartTime >= 600) {
       stopVoiceRecordingAndSend();
     }
   }
 
-  // Gravacao ativa pelo microfone SPM1423 do M5Stick
-  if (voiceState == VoiceState::LISTENING) {
+  // ============================================================
+  // ESCUTA EM SEGUNDO PLANO (ATIVO EM LISTENING OU EM RESULT NO MODO ALEXA)
+  // ============================================================
+  const bool shouldListen = (voiceState == VoiceState::LISTENING) ||
+                            (voiceState == VoiceState::RESULT && voiceInputMode == VoiceInputMode::ALEXA);
+
+  if (shouldListen) {
+    if (!voiceMicRecordingActive) {
+      M5.Mic.begin();
+      voiceMicRecordingActive = true;
+    }
+
     constexpr size_t CHUNK = 512;
     if (voiceAudioBuffer && (voiceRecordedSamples + CHUNK <= VOICE_BUFFER_BYTES / sizeof(int16_t))) {
       if (M5.Mic.record(&voiceAudioBuffer[voiceRecordedSamples], CHUNK, VOICE_SAMPLE_RATE)) {
         while (M5.Mic.isRecording()) delay(1);
+
+        int32_t chunkMax = 0;
+        int64_t sumSq = 0;
+        for (size_t i = 0; i < CHUNK; ++i) {
+          int16_t sample = voiceAudioBuffer[voiceRecordedSamples + i];
+          int32_t absS = abs(sample);
+          if (absS > chunkMax) chunkMax = absS;
+          sumSq += (int64_t)sample * sample;
+        }
+        int32_t rms = (int32_t)sqrt(sumSq / CHUNK);
+
         voiceRecordedSamples += CHUNK;
+
+        if (voiceInputMode == VoiceInputMode::ALEXA) {
+          if (!voxSpeechDetected) {
+            // Pré-buffer circular de 1024 amostras (~64ms) para nunca cortar o "Ei"
+            if (voiceRecordedSamples >= 1024) {
+              memmove(&voiceAudioBuffer[0], &voiceAudioBuffer[CHUNK], CHUNK * sizeof(int16_t));
+              voiceRecordedSamples = CHUNK;
+            }
+            if (rms > 650 || chunkMax > 1600) {
+              voxSpeechDetected = true;
+              voxSilenceStart = 0;
+              voiceRecStartTime = millis();
+              redraw = true;
+            }
+          } else {
+            // Fala detectada
+            if (rms > 500 || chunkMax > 1300) {
+              voxSilenceStart = 0;
+            } else {
+              if (voxSilenceStart == 0) {
+                voxSilenceStart = millis();
+              } else if (millis() - voxSilenceStart >= VOX_SILENCE_COOLDOWN_MS) {
+                Serial.println("[VOX ALEXA] Silencio de 2.0s atingido. Enviando audio!");
+                stopVoiceRecordingAndSend();
+                return;
+              }
+            }
+          }
+        }
       }
     }
 
@@ -4820,13 +5166,12 @@ void processVoiceAiScreen() {
       redraw = true;
     }
 
-    // Auto-timeout de segurança estendido para 10.0 segundos
-    if (millis() - voiceRecStartTime >= 10000) {
+    if (voxSpeechDetected && (millis() - voiceRecStartTime >= (VOICE_MAX_SECS * 1000))) {
       stopVoiceRecordingAndSend();
     }
   }
 
-  // Le respostas e configuracoes seriais do PC
+  // Leitura de mensagens seriais do PC
   while (Serial.available()) {
     String line = Serial.readStringUntil('\n');
     line.trim();
@@ -4845,7 +5190,8 @@ void processVoiceAiScreen() {
         }
         Serial.printf("[VOICE] PC Bridge configurado: %s:%d\n", pcBridgeIp.c_str(), pcBridgePort);
       } else if (line.indexOf("\"type\":\"READY\"") != -1) {
-        voiceActiveAgent = "IA Geral";
+        voiceActiveAgent = "AGY";
+        voiceBridgeConnected = true;
         redraw = true;
       } else if (line.indexOf("\"type\":\"TRANS\"") != -1) {
         int tIdx = line.indexOf("\"text\":\"");
@@ -4854,7 +5200,7 @@ void processVoiceAiScreen() {
           voiceTranscription = line.substring(tIdx + 8, tEnd);
           redraw = true;
         }
-      } else if (line.indexOf("\"type\":\"RESULT\"") != -1) {
+      } else if (line.indexOf("\"type\":\"RESULT\"") != -1 || line.indexOf("\"type\":\"IGNORE\"") != -1) {
         parseVoiceAiResponse(line);
       }
     }
@@ -4870,7 +5216,7 @@ void drawScreen() {
   static Screen lastRenderedScreen = (Screen)255;
   static bool lastRenderedPortrait = false;
 
-  if (forceFullRedraw || screen != lastRenderedScreen || portrait != lastRenderedPortrait || !isMenuScreen(screen)) {
+  if (forceFullRedraw || screen != lastRenderedScreen || portrait != lastRenderedPortrait) {
     display.fillScreen(UI_BG);
     forceFullRedraw = false;
     lastRenderedScreen = screen;
@@ -4915,7 +5261,7 @@ void drawScreen() {
     case Screen::VOICE_AI:     drawVoiceAiScreen(); break;
   }
 
-  if (!portrait) drawFooter();
+  if (!portrait && screen != Screen::VOICE_AI) drawFooter();
   display.endWrite();
   redraw = false;
 }
