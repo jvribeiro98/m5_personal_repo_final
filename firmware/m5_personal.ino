@@ -441,7 +441,7 @@ static uint32_t lastVoiceResultAt = 0;
 static M5Canvas uiCanvas(&M5.Display);
 static bool uiCanvasReady = false;
 
-inline // ensureUiCanvas is defined inline at the top of the sketch
+void ensureUiCanvas();
 
 inline M5Canvas& getGfx() {
   ensureUiCanvas();
@@ -3060,7 +3060,7 @@ void drawWeatherIcon(int x, int y, float temp, bool connected) {
 
 void drawCyberWatchface(bool fullClear) {
   auto& d = getGfx();
-  d.setRotation(3);
+  d.setRotation(1);
 
   time_t now = time(nullptr);
   tm value;
@@ -4504,6 +4504,7 @@ void ensureUiCanvas() {
       uiCanvas.setPsram(true);
     }
     uiCanvas.createSprite(240, 135);
+    uiCanvas.setRotation(1);
     uiCanvasReady = true;
   }
 }
@@ -5301,7 +5302,7 @@ void drawScreen() {
 
   // Double-Buffering Integral (Padrão Bruce / CatHack - 60 FPS sem Flicker / Tearing)
   ensureUiCanvas();
-  uiCanvas.setRotation(3);
+  uiCanvas.setRotation(1);
   uiCanvas.fillScreen(UI_BG);
 
   switch (screen) {
@@ -5347,7 +5348,7 @@ void drawScreen() {
   }
 
   // Push Atômico do Quadro Inteiro para o ST7789 via DMA/SPI (Zero Flickering)
-  M5.Display.setRotation(3);
+  M5.Display.setRotation(1);
   uiCanvas.pushSprite(0, 0);
   redraw = false;
 }
@@ -5912,7 +5913,7 @@ void executeSelected() {
 
 void showBootIntro() {
   auto& d = M5.Display;
-  d.setRotation(3);
+  d.setRotation(1);
   d.fillScreen(UI_BG);
 
   // Vinheta sonora futurista de abertura (arpeggio ascendente não-bloqueante)
@@ -5980,7 +5981,7 @@ void setup() {
   }
   Serial.printf("[BOOT] IMU inicializado: enabled=%d, type=%d\n", M5.Imu.isEnabled(), (int)M5.Imu.getType());
   updateBatteryState(true);
-  M5.Display.setRotation(3);
+  M5.Display.setRotation(1);
   M5.Display.setBrightness(153);
   M5.Display.setTextFont(1);
   M5.Display.setTextWrap(false);
