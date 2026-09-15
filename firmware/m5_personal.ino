@@ -367,6 +367,9 @@ String clockDayOfWeekText();
 bool isMenuScreen(Screen value);
 void drawWifiIcon(int x, int y, bool connected);
 void drawBatteryGauge(int x, int y, int battery, bool charging);
+void updateBatteryState(bool forceNow = false);
+int getBatteryLevelCached();
+bool isBatteryChargingCached();
 void drawStatusBar();
 void updateStatusBarClock();
 void drawClockScreen(bool fullClear = true);
@@ -2309,7 +2312,7 @@ void handleWebSystemPage() {
   body += F(R"HTML(</strong></div><div class="status"><span>Web UI</span><strong>)HTML");
   body += webUiMode == WebUiMode::LAN ? "Rede" : (webUiMode == WebUiMode::SETUP_AP ? "AP" : "Desativada");
   body += F(R"HTML(</strong></div><div class="status"><span>Bateria</span><strong>)HTML");
-  body += String(constrain(M5.Power.getBatteryLevel(),0,100)) + "%";
+  body += String(getBatteryLevelCached()) + "%";
   body += F(R"HTML(</strong></div><div class="status"><span>Hora</span><strong>)HTML");
   body += clockTimeText();
   body += F(R"HTML(</strong></div><div class="status"><span>Local</span><strong>)HTML");
@@ -2333,7 +2336,7 @@ async function syncClock(){const r=await api('/api/system/clock-sync',{method:'P
 void handleWebApiSystemState() {
   String extra = "\"wifi\":" + String(WiFi.status()==WL_CONNECTED?"true":"false") +
                  ",\"webMode\":\"" + String(webUiMode==WebUiMode::LAN?"lan":(webUiMode==WebUiMode::SETUP_AP?"ap":"off")) + "\"" +
-                 ",\"battery\":" + String(constrain(M5.Power.getBatteryLevel(),0,100)) +
+                 ",\"battery\":" + String(getBatteryLevelCached()) +
                  ",\"time\":\"" + jsonEscape(clockTimeText()) + "\"" +
                  ",\"date\":\"" + jsonEscape(clockDateText()) + "\"" +
                  ",\"city\":\"" + jsonEscape(weatherCity) + "\"" +
@@ -2517,6 +2520,7 @@ String wifiKeyboard(const String& title, const String& initial, bool masked, boo
   processWifiMaintenance();
   M5.update();
   buttonC.update();
+  updateBatteryState(false);
 
     if (redrawKeyboard) {
       redrawKeyboard = false;
@@ -2894,12 +2898,80 @@ void drawWifiIcon(int x, int y, bool connected) {
   }
 }
 
+// ============================================================
+// GERENCIADOR DE BATERIA ESTAVEL (FILTRO IIR, OVERSAMPLING E HISTERESE)
+// Elimina 100% da oscilacao do ADC durante navegacao e scroll no M5StickC Plus 2
+// ============================================================
+static int s_cachedBatteryLevel = -1;
+static bool s_cachedBatteryCharging = false;
+static uint32_t s_lastBatterySampleTime = 0;
+static float s_filteredBatteryLevel = -1.0f;
+static constexpr uint32_t BATTERY_SAMPLE_INTERVAL_MS = 3000;
+
+void updateBatteryState(bool forceNow) {
+  uint32_t now = millis();
+  if (!forceNow && s_cachedBatteryLevel >= 0 && (now - s_lastBatterySampleTime < BATTERY_SAMPLE_INTERVAL_MS)) {
+    return;
+  }
+  s_lastBatterySampleTime = now;
+
+  bool charging = M5.Power.isCharging();
+
+  // Media de 4 leituras rapidas para cancelar ripple e ruido de chaveamento do ADC
+  int32_t sum = 0;
+  for (int i = 0; i < 4; ++i) {
+    sum += M5.Power.getBatteryLevel();
+    delayMicroseconds(400);
+  }
+  float rawSample = constrain((float)sum / 4.0f, 0.0f, 100.0f);
+
+  if (s_filteredBatteryLevel < 0.0f || charging != s_cachedBatteryCharging) {
+    // Inicializacao no boot ou transicao de plug/unplug do cabo USB
+    s_cachedBatteryCharging = charging;
+    s_filteredBatteryLevel = rawSample;
+    s_cachedBatteryLevel = constrain((int)roundf(rawSample), 0, 100);
+    return;
+  }
+
+  // Filtro passa-baixa IIR: absorve quedas de tensao transitorias de carga da CPU/display
+  s_filteredBatteryLevel = (s_filteredBatteryLevel * 0.85f) + (rawSample * 0.15f);
+  int candidate = constrain((int)roundf(s_filteredBatteryLevel), 0, 100);
+
+  if (charging) {
+    // Carregando: nivel sobe progressivamente
+    if (candidate > s_cachedBatteryLevel) {
+      s_cachedBatteryLevel = candidate;
+    }
+  } else {
+    // Descarregando: NUNCA salta para cima por ruido de tecla ou scroll!
+    if (candidate < s_cachedBatteryLevel) {
+      s_cachedBatteryLevel = candidate;
+    } else if (candidate > s_cachedBatteryLevel + 6) {
+      // Reajuste caso a tensao estabilize bem acima (ex: desconexao de carga)
+      s_cachedBatteryLevel = candidate;
+    }
+  }
+}
+
+int getBatteryLevelCached() {
+  updateBatteryState(false);
+  return (s_cachedBatteryLevel >= 0) ? s_cachedBatteryLevel : 100;
+}
+
+bool isBatteryChargingCached() {
+  updateBatteryState(false);
+  return s_cachedBatteryCharging;
+}
+
 void drawBatteryGauge(int x, int y, int battery, bool charging) {
   auto& d = M5.Display;
   uint16_t bColor = UI_GREEN;
   if (charging) bColor = UI_CYAN;
   else if (battery <= 20) bColor = UI_RED;
   else if (battery <= 45) bColor = UI_YELLOW;
+
+  // Limpa area do icone + texto para evitar sobreposicao de digitos
+  d.fillRect(x, y, 58, 12, UI_BG);
 
   // Carcaca metalica da bateria com terminal
   d.drawRoundRect(x, y, 20, 10, 2, UI_BORDER);
@@ -2926,9 +2998,9 @@ void drawStatusBar() {
   bool wifiConnected = (WiFi.status() == WL_CONNECTED);
   drawWifiIcon(104, 7, wifiConnected);
 
-  // 2. Bateria com mostrador (icone grafico preenchido + porcentagem numerica)
-  int battery = constrain(M5.Power.getBatteryLevel(), 0, 100);
-  bool charging = M5.Power.isCharging();
+  // 2. Bateria com mostrador estavel (cache filtrado sem oscilacao)
+  int battery = getBatteryLevelCached();
+  bool charging = isBatteryChargingCached();
   drawBatteryGauge(126, 8, battery, charging);
 
   // 3. Relogio digital de alto contraste
@@ -2999,8 +3071,8 @@ void drawCyberWatchface(bool fullClear) {
   const int min = value.tm_min;
   const int sec = value.tm_sec;
   const bool secEven = (sec % 2 == 0);
-  const int battery = constrain(M5.Power.getBatteryLevel(), 0, 100);
-  const bool charging = M5.Power.isCharging();
+  const int battery = getBatteryLevelCached();
+  const bool charging = isBatteryChargingCached();
   const bool wifiConnected = (WiFi.status() == WL_CONNECTED);
 
   if (fullClear) {
@@ -5893,6 +5965,7 @@ void setup() {
     M5.Imu.begin(&M5.In_I2C, M5.getBoard());
   }
   Serial.printf("[BOOT] IMU inicializado: enabled=%d, type=%d\n", M5.Imu.isEnabled(), (int)M5.Imu.getType());
+  updateBatteryState(true);
   M5.Display.setRotation(3);
   M5.Display.setBrightness(153);
   M5.Display.setTextFont(1);
@@ -5945,6 +6018,7 @@ void loop() {
 
   M5.update();
   buttonC.update();
+  updateBatteryState(false);
   if (screen != Screen::MOUSE && screen != Screen::VOICE_AI) processWeatherAndClock();
 
   static bool previousCPressed = false;
