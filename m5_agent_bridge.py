@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-M5StickC Plus 2 - Ponte de Voz & Sessão Persistente Antigravity (agy) v6.1
-- Modo Alexa Mãos-Livres (Wake-Word contínuo "Ei M5" / "M5")
+M5StickC Plus 2 - Ponte de Voz & Antigravity (agy) v7.0
+- Modo Alexa Mãos-Livres (Wake-Word contínuo "Ei M5" / "M5" / "Alexa")
 - Modo Push-to-Talk (PTT)
+- Despachante Nativo de Ações do Windows (Chrome, YouTube, VSCode, Terminal, etc.)
 - Acionamento direto de Hardware IR (GPIO 19) no M5Stick via JSON ("ir": "...")
-- Integração profunda com sessão fixa do Antigravity (agy) com suporte a tags IR
+- Integração Inteligente com Antigravity CLI (agy) para consultas e automações
 """
 
 import os
@@ -16,7 +17,14 @@ import socket
 import subprocess
 import threading
 import http.server
+import urllib.parse
+import webbrowser
 import numpy as np
+
+try:
+    sys.stdout.reconfigure(line_buffering=True)
+except Exception:
+    pass
 
 try:
     import serial
@@ -33,10 +41,12 @@ except ImportError:
 
 recognizer = sr.Recognizer()
 
-# Configuração da Sessão Fixa do Antigravity (agy)
+# Configurações do Antigravity CLI e Caminhos do Windows
 AGY_BIN = r"C:\Users\Jvrib\AppData\Local\agy\bin\agy.EXE"
-AGY_CONVERSATION_ID = "455e2fe3-8afe-4e0d-9514-2654d3af7ff5"
 AGY_MODEL = "gemini-3.8-flash-low"
+CHROME_PATH = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+CODE_CMD = r"C:\Users\Jvrib\AppData\Local\Programs\cursor\resources\app\codeBin\code.cmd"
+CODEX_DIR = r"C:\Users\Jvrib\Documents\Codex"
 
 current_agent = "AGY"
 active_port = "COM3"
@@ -52,7 +62,6 @@ def trigger_m5_ir(endpoint, params):
         return False, "IP do M5Stick desconhecido"
     try:
         import urllib.request
-        import urllib.parse
         qs = urllib.parse.urlencode(params)
         url = f"http://{m5_client_ip}{endpoint}?{qs}"
         req = urllib.request.Request(url, data=b"", method='POST')
@@ -83,27 +92,25 @@ def find_m5_port():
     return "COM3"
 
 def query_agy_agent(prompt):
-    """Encaminha comandos e perguntas para a sessão fixa e persistente do Antigravity (agy)."""
+    """Encaminha comandos e perguntas para o Antigravity (agy)."""
     global current_agent
     current_agent = "AGY"
-    print(f"\n[AGY SESSÃO]: Enviando para conversa {AGY_CONVERSATION_ID}...")
+    print(f"\n[AGY CONSULTA]: Consultando Antigravity CLI...")
     print(f"[PROMPT]: {prompt}")
 
     agy_prompt = (
         f"[Sistema M5StickC Plus 2 - Assistente de Voz]: "
-        f"Você é a IA conectada ao microfone e tela LCD 240x135 do M5StickC Plus 2. "
-        f"O M5Stick possui emissor Infravermelho FÍSICO (GPIO 19) para Ar-Condicionado Samsung e TV. "
-        f"Se o comando do usuário pedir para controlar o ar-condicionado ou a TV, inclua obrigatoriamente no início da sua resposta a tag correspondente: "
-        f"[IR:AC_POWER] (ligar/desligar ar Samsung), [IR:AC_TEMP_UP] (aumentar temp ar), [IR:AC_TEMP_DOWN] (diminuir temp ar), "
-        f"[IR:TV_POWER] (ligar/desligar TV Samsung), [IR:TV_VOL_UP] (aumentar volume TV), [IR:TV_VOL_DOWN] (diminuir volume TV), [IR:TV_MUTE] (mutar TV). "
-        f"Se for uma ação no PC (abrir programas, codex, terminal, chrome, arquivos, automações), execute-as imediatamente. "
-        f"Responda sempre em português em no máximo 2 frases curtas e diretas para o visor: "
+        f"O usuário falou pelo microfone: \"{prompt}\". "
+        f"O M5Stick possui emissor Infravermelho FÍSICO (GPIO 19) para Ar Samsung e TV Samsung. "
+        f"Se o comando pedir para controlar o ar ou TV, inclua no início da resposta a tag correspondente: "
+        f"[IR:AC_POWER], [IR:AC_TEMP_UP], [IR:AC_TEMP_DOWN], [IR:TV_POWER], [IR:TV_VOL_UP], [IR:TV_VOL_DOWN], [IR:TV_MUTE]. "
+        f"Se for uma ação no PC, execute-a ou responda de forma concisa. "
+        f"Responda sempre em português em no máximo 2 frases curtas para o visor 240x135: "
         f"{prompt}"
     )
 
     cmd = [
         AGY_BIN,
-        "--conversation", AGY_CONVERSATION_ID,
         "--model", AGY_MODEL,
         "--effort", "low",
         "--dangerously-skip-permissions",
@@ -115,7 +122,7 @@ def query_agy_agent(prompt):
             cmd,
             capture_output=True,
             text=True,
-            timeout=24,
+            timeout=20,
             encoding='utf-8',
             errors='replace'
         )
@@ -129,7 +136,6 @@ def query_agy_agent(prompt):
             clean_lines = [l.strip() for l in clean_reply.splitlines() if l.strip()]
             clean_reply = " ".join(clean_lines)
 
-            # Extrai tag [IR:...] se presente na resposta do AGY
             ir_tag = None
             m_ir = re.search(r'\[IR:([A-Z_]+)\]', clean_reply)
             if m_ir:
@@ -144,10 +150,10 @@ def query_agy_agent(prompt):
         else:
             if stderr:
                 print(f"[AGY STDERR]: {stderr[:120]}")
-            return f"Comando '{prompt}' executado no PC via AGY.", None
+            return f"Processado via AGY.", None
 
     except subprocess.TimeoutExpired:
-        print("[AGY AVISO]: Timeout de 24s atingido. O comando continua em segundo plano.")
+        print("[AGY AVISO]: Timeout de 20s atingido. O comando continua em segundo plano.")
         return "AGY em execucao no PC (processando em segundo plano).", None
     except Exception as e:
         print(f"[AGY ERRO]: {e}")
@@ -180,14 +186,52 @@ def check_and_strip_wake_word(text):
 
     return False, text_clean
 
+def open_browser(url="https://www.google.com"):
+    """Abre o navegador de forma 100% garantida no Windows."""
+    try:
+        if os.path.exists(CHROME_PATH):
+            subprocess.Popen([CHROME_PATH, url])
+            return True
+    except Exception:
+        pass
+    try:
+        webbrowser.open(url)
+        return True
+    except Exception:
+        pass
+    try:
+        subprocess.Popen(f'start {url}', shell=True)
+        return True
+    except Exception:
+        return False
+
+def open_vscode(path=None):
+    """Abre o VS Code / Cursor no caminho indicado."""
+    try:
+        cmd = [CODE_CMD]
+        if path:
+            cmd.append(path)
+        if os.path.exists(CODE_CMD):
+            subprocess.Popen(cmd, shell=True)
+            return True
+        else:
+            target = f'code "{path}"' if path else 'code'
+            subprocess.Popen(target, shell=True)
+            return True
+    except Exception as e:
+        print(f"[ERRO VSCODE]: {e}")
+        return False
+
 def parse_voice_command(text):
-    """Interpretação semântica com suporte direto a comandos IR para Ar e TV."""
+    """Interpretação semântica com suporte direto a comandos IR para Ar e TV e Ações no PC."""
     global current_agent
     text_clean = text.strip()
     text_lower = text_clean.lower()
     print(f"\n[INTERPRETAÇÃO]: Analisando '{text_clean}'...")
 
+    # ============================================================
     # 1. Comandos de Ar-Condicionado (Hardware IR GPIO 19)
+    # ============================================================
     is_ac = bool(re.search(r'\b(?:ar|ar-condicionado|ar\s+condicionado|arcondicionado)\b', text_lower))
     if is_ac:
         if any(w in text_lower for w in ['desliga', 'desligar', 'desligue', 'apaga', 'apagar', 'para', 'parar', 'corta']):
@@ -246,7 +290,9 @@ def parse_voice_command(text):
                 "auto_resume": True
             }
 
+    # ============================================================
     # 2. Comandos de Televisão (Hardware IR GPIO 19)
+    # ============================================================
     is_tv = bool(re.search(r'\b(?:tv|televis[aã]o)\b', text_lower))
     if is_tv:
         if any(w in text_lower for w in ['desliga', 'desligar', 'desligue', 'liga', 'ligar', 'ligue', 'power']):
@@ -294,131 +340,158 @@ def parse_voice_command(text):
                 "auto_resume": True
             }
 
-    # 3. Comandos rápidos de Sistema no PC
-    if re.search(r'\b(?:abrir|abre|abra|iniciar|inicia|inicie)\s+(?:o\s+)?(?:projeto\s+)?codex\b', text_lower) or text_lower in ['codex', 'abrir codex']:
-        current_agent = "Codex"
-        subprocess.Popen(r'code "C:\Users\Jvrib\Documents\Codex"', shell=True)
+    # ============================================================
+    # 3. Despachante de Ações no PC (Execução Nativa Instantânea)
+    # ============================================================
+
+    # A) Navegador / Internet / Chrome
+    is_browser_request = bool(re.search(r'\b(?:navegador|browser|chrome|google chrome|internet|web)\b', text_lower))
+    if is_browser_request and any(w in text_lower for w in ['abrir', 'abre', 'abra', 'iniciar', 'inicia', 'inicie', 'entra', 'entrar']):
+        print("[DESPACHO PC]: Abrindo navegador...")
+        open_browser("https://www.google.com")
         return {
             "type": "RESULT",
-            "agent": "Codex",
-            "title": "AGENTE ATIVADO",
+            "agent": "Chrome",
+            "title": "NAVEGADOR",
             "text": text_clean,
-            "body": "Projeto Codex aberto no VSCode!",
+            "body": "Google Chrome aberto no computador!",
             "auto_resume": True
         }
 
-    if re.search(r'\b(?:abrir|abre|abra|iniciar|inicia|inicie)\s+(?:o\s+)?(?:vscode|vs code|visual studio|editor)\b', text_lower) or text_lower in ['vscode', 'abrir vscode']:
-        current_agent = "VSCode"
-        subprocess.Popen("code", shell=True)
+    # B) YouTube / Vídeo
+    if 'youtube' in text_lower or (('video' in text_lower or 'vídeo' in text_lower) and any(w in text_lower for w in ['abrir', 'abre', 'abra', 'tocar', 'toca'])):
+        print("[DESPACHO PC]: Abrindo YouTube...")
+        open_browser("https://www.youtube.com")
+        return {
+            "type": "RESULT",
+            "agent": "YouTube",
+            "title": "YOUTUBE",
+            "text": text_clean,
+            "body": "YouTube aberto no navegador!",
+            "auto_resume": True
+        }
+
+    # C) Busca na Web / Google
+    m_search = re.search(r'^(?:pesquisar|pesquise|procurar|procure|buscar|busca|pesquisa)\s+(?:por\s+|sobre\s+)?(.+)', text_lower)
+    if m_search:
+        query = m_search.group(1).strip()
+        print(f"[DESPACHO PC]: Pesquisando na web: '{query}'...")
+        open_browser(f"https://www.google.com/search?q={urllib.parse.quote(query)}")
+        return {
+            "type": "RESULT",
+            "agent": "Busca Web",
+            "title": "BUSCA WEB",
+            "text": text_clean,
+            "body": f"Pesquisando '{query}' no Google!",
+            "auto_resume": True
+        }
+
+    # D) Codex / VSCode / Editor
+    is_codex = bool(re.search(r'\b(?:codex|projeto\s+codex)\b', text_lower))
+    if is_codex:
+        print("[DESPACHO PC]: Abrindo pasta Codex no VSCode/Cursor...")
+        open_vscode(CODEX_DIR)
+        return {
+            "type": "RESULT",
+            "agent": "Codex",
+            "title": "CODEX ATIVADO",
+            "text": text_clean,
+            "body": "Projeto Codex aberto no VS Code!",
+            "auto_resume": True
+        }
+
+    is_editor = bool(re.search(r'\b(?:vscode|vs code|visual studio|editor|cursor)\b', text_lower))
+    if is_editor and any(w in text_lower for w in ['abrir', 'abre', 'abra', 'iniciar', 'inicia', 'inicie']):
+        print("[DESPACHO PC]: Abrindo VS Code/Cursor...")
+        open_vscode()
         return {
             "type": "RESULT",
             "agent": "VSCode",
-            "title": "AGENTE ATIVADO",
+            "title": "VS CODE",
             "text": text_clean,
             "body": "Visual Studio Code aberto no PC!",
             "auto_resume": True
         }
 
-    if re.search(r'\b(?:abrir|abre|abra|iniciar|inicia|inicie)\s+(?:o\s+)?(?:chrome|google chrome|navegador|browser)\b', text_lower) or text_lower in ['chrome', 'google chrome', 'abrir chrome']:
-        current_agent = "Chrome"
-        subprocess.Popen("start chrome", shell=True)
-        return {
-            "type": "RESULT",
-            "agent": "Chrome",
-            "title": "AGENTE ATIVADO",
-            "text": text_clean,
-            "body": "Google Chrome aberto no PC!",
-            "auto_resume": True
-        }
-
-    if re.search(r'\b(?:abrir|abre|abra|iniciar|inicia|inicie)\s+(?:o\s+)?(?:terminal|powershell|cmd|prompt)\b', text_lower) or text_lower in ['terminal', 'powershell', 'abrir terminal']:
-        current_agent = "Terminal"
+    # E) Terminal / PowerShell
+    if any(w in text_lower for w in ['terminal', 'powershell', 'cmd', 'prompt']) and any(w in text_lower for w in ['abrir', 'abre', 'abra', 'iniciar']):
+        print("[DESPACHO PC]: Abrindo Terminal...")
         subprocess.Popen("start wt || start powershell", shell=True)
         return {
             "type": "RESULT",
             "agent": "Terminal",
-            "title": "AGENTE ATIVADO",
+            "title": "TERMINAL",
             "text": text_clean,
-            "body": "Windows Terminal aberto no PC!",
+            "body": "Windows Terminal aberto!",
             "auto_resume": True
         }
 
-    if re.search(r'\b(?:abrir|abre|abra|iniciar|inicia|inicie)\s+(?:o\s+)?(?:bloco de notas|notepad)\b', text_lower) or text_lower in ['bloco de notas', 'notepad']:
-        current_agent = "Notepad"
+    # F) Bloco de Notas / Notepad
+    if any(w in text_lower for w in ['bloco de notas', 'notepad']) and any(w in text_lower for w in ['abrir', 'abre', 'abra']):
+        print("[DESPACHO PC]: Abrindo Bloco de Notas...")
         subprocess.Popen("notepad", shell=True)
         return {
             "type": "RESULT",
             "agent": "Notepad",
-            "title": "AGENTE ATIVADO",
+            "title": "BLOCO DE NOTAS",
             "text": text_clean,
-            "body": "Bloco de Notas aberto no PC!",
+            "body": "Bloco de Notas aberto!",
             "auto_resume": True
         }
 
-    if re.search(r'\b(?:abrir|abre|abra|iniciar|inicia|inicie)\s+(?:a\s+)?(?:calculadora|calc)\b', text_lower) or text_lower in ['calculadora', 'calc']:
-        current_agent = "Calculadora"
+    # G) Calculadora
+    if any(w in text_lower for w in ['calculadora', 'calc']) and any(w in text_lower for w in ['abrir', 'abre', 'abra']):
+        print("[DESPACHO PC]: Abrindo Calculadora...")
         subprocess.Popen("calc", shell=True)
         return {
             "type": "RESULT",
             "agent": "Calculadora",
-            "title": "AGENTE ATIVADO",
+            "title": "CALCULADORA",
             "text": text_clean,
-            "body": "Calculadora aberta no PC!",
+            "body": "Calculadora aberta!",
             "auto_resume": True
         }
 
-    if re.search(r'\b(?:abrir|abre|abra|tocar|toca|iniciar)\s+(?:o\s+)?(?:spotify|música|musica)\b', text_lower) or text_lower in ['spotify', 'tocar musica']:
-        current_agent = "Spotify"
+    # H) Spotify / Música
+    if any(w in text_lower for w in ['spotify', 'tocar musica', 'tocar música']) or (('música' in text_lower or 'musica' in text_lower) and any(w in text_lower for w in ['abrir', 'toca', 'tocar', 'iniciar'])):
+        print("[DESPACHO PC]: Abrindo Spotify...")
         subprocess.Popen("start spotify:", shell=True)
         return {
             "type": "RESULT",
             "agent": "Spotify",
-            "title": "AGENTE ATIVADO",
+            "title": "SPOTIFY",
             "text": text_clean,
-            "body": "Spotify aberto no PC!",
+            "body": "Spotify aberto no computador!",
             "auto_resume": True
         }
 
-    if re.search(r'\b(?:abrir|abre|abra)\s+(?:as\s+|os\s+)?(?:pastas|arquivos|explorer)\b', text_lower) or text_lower in ['explorer', 'abrir arquivos']:
-        current_agent = "Arquivos"
+    # I) Explorador de Arquivos
+    if any(w in text_lower for w in ['pastas', 'arquivos', 'explorer', 'meus arquivos', 'documentos']) and any(w in text_lower for w in ['abrir', 'abre', 'abra']):
+        print("[DESPACHO PC]: Abrindo Explorer...")
         subprocess.Popen("explorer", shell=True)
         return {
             "type": "RESULT",
             "agent": "Arquivos",
-            "title": "AGENTE ATIVADO",
+            "title": "EXPLORADOR",
             "text": text_clean,
             "body": "Explorador de Arquivos aberto!",
             "auto_resume": True
         }
 
-    # Busca Web
-    m_search = re.search(r'^(?:pesquisar|pesquise|procurar|procure)\s+(?:por\s+|sobre\s+)?(.+)', text_lower)
-    if m_search:
-        query = m_search.group(1).strip()
-        import urllib.parse
-        q_enc = urllib.parse.quote(query)
-        subprocess.Popen(f'start https://www.google.com/search?q={q_enc}', shell=True)
-        return {
-            "type": "RESULT",
-            "agent": "Busca Web",
-            "title": "BUSCA NO CHROME",
-            "text": text_clean,
-            "body": f"Pesquisando '{query}' no navegador!",
-            "auto_resume": True
-        }
-
-    # Hora e Data rápidas
-    if any(k == text_lower or text_lower.startswith(k) for k in ['que horas', 'que horas sao', 'hora certa', 'hora atual']):
+    # J) Horário e Data
+    if any(k == text_lower or text_lower.startswith(k) for k in ['que horas', 'que horas sao', 'que horas são', 'hora certa', 'hora atual', 'data de hoje', 'que dia e hoje', 'que dia é hoje']):
         return {
             "type": "RESULT",
             "agent": "Relógio",
             "title": "HORA ATUAL",
             "text": text_clean,
-            "body": f"Agora são exatamente {time.strftime('%H:%M:%S')}.",
+            "body": f"Agora são {time.strftime('%H:%M:%S')} ({time.strftime('%d/%m/%Y')}).",
             "auto_resume": True
         }
 
-    # Roteamento Completo para a Sessão Fixa do Antigravity (agy)!
+    # ============================================================
+    # 4. Inteligência e Raciocínio via Antigravity CLI (agy)
+    # ============================================================
     agy_reply, ir_tag = query_agy_agent(text_clean)
     res = {
         "type": "RESULT",
@@ -433,18 +506,17 @@ def parse_voice_command(text):
     return res
 
 def process_audio_pcm(raw_pcm, sample_rate=16000, mode='ALEXA'):
-    global ser_global
-    print(f"\n[AUDIO PROCESS]: Processando áudio ({len(raw_pcm)} bytes, ~{len(raw_pcm)/(sample_rate*2):.1f}s, modo={mode})...")
-
-    if len(raw_pcm) < sample_rate * 0.35:
+    """Processa pacote de áudio PCM, realiza STT e encaminha para execução."""
+    if not raw_pcm or len(raw_pcm) < 800:
+        print("[AVISO]: Áudio muito curto ou vazio recebido.")
         if mode == 'ALEXA':
             return {"type": "IGNORE"}
         return {
             "type": "RESULT",
-            "agent": "AGY",
-            "title": "MUITO CURTO",
+            "agent": "Voz",
+            "title": "AUDIO MUITO CURTO",
             "text": "",
-            "body": "Clique para falar e diga sua frase com calma.",
+            "body": "Fale mais próximo ao microfone por pelo menos 1 segundo.",
             "auto_resume": False
         }
 
@@ -462,9 +534,8 @@ def process_audio_pcm(raw_pcm, sample_rate=16000, mode='ALEXA'):
 
     try:
         text = recognizer.recognize_google(audio_data, language="pt-BR")
-        print(f"[RECONHECIDO]: '{text}'")
+        print(f"\n[RECONHECIDO]: '{text}'")
 
-        # No Modo Alexa (Mãos-Livres), valida o gatilho Wake-Word
         if mode == 'ALEXA':
             has_wake, prompt = check_and_strip_wake_word(text)
             if not has_wake:
@@ -490,7 +561,6 @@ def process_audio_pcm(raw_pcm, sample_rate=16000, mode='ALEXA'):
         else:
             text_to_process = text
 
-        # Notifica o M5Stick da transcrição do comando
         trans_msg = json.dumps({"type": "TRANS", "text": text_to_process}, ensure_ascii=False) + "\n"
         with ser_lock:
             if ser_global and ser_global.is_open:
@@ -499,7 +569,6 @@ def process_audio_pcm(raw_pcm, sample_rate=16000, mode='ALEXA'):
         res = parse_voice_command(text_to_process)
         print(f"[RESPOSTA M5]: {res.get('title')} -> {res.get('body')} (IR: {res.get('ir')})")
 
-        # Envia também via serial por redundância
         res_json = json.dumps(res, ensure_ascii=False, separators=(',', ':')) + "\n"
         with ser_lock:
             if ser_global and ser_global.is_open:
@@ -524,7 +593,7 @@ def process_audio_pcm(raw_pcm, sample_rate=16000, mode='ALEXA'):
         return err_res
 
     except Exception as e:
-        print(f"[ERRO]: {e}")
+        print(f"[ERRO STT]: {e}")
         if mode == 'ALEXA':
             return {"type": "IGNORE"}
         err_res = {
@@ -551,6 +620,7 @@ class AudioHTTPHandler(http.server.BaseHTTPRequestHandler):
             content_length = int(self.headers.get('Content-Length', 0))
             mode = self.headers.get('X-Voice-Mode', 'ALEXA')
             raw_pcm = self.rfile.read(content_length)
+            print(f"\n[HTTP /audio]: Recebidos {len(raw_pcm)} bytes PCM (modo={mode}) de {m5_client_ip}")
             result = process_audio_pcm(raw_pcm, 16000, mode=mode)
 
             self.send_response(200)
@@ -571,12 +641,17 @@ class AudioHTTPHandler(http.server.BaseHTTPRequestHandler):
             self.send_response(404)
             self.end_headers()
 
-def start_http_server(lan_ip, port=5000):
-    server = http.server.ThreadingHTTPServer(('0.0.0.0', port), AudioHTTPHandler)
-    print(f"[HTTP SERVER]: Ativo em http://{lan_ip}:{port}/audio")
-    t = threading.Thread(target=server.serve_forever, daemon=True)
+def start_http_server(host, port):
+    def run_server():
+        try:
+            server = http.server.ThreadingHTTPServer(('0.0.0.0', port), AudioHTTPHandler)
+            print(f"[HTTP SERVER]: Ativo em http://{host}:{port}/audio")
+            server.serve_forever()
+        except Exception as e:
+            print(f"[HTTP SERVER ERRO]: {e}")
+
+    t = threading.Thread(target=run_server, daemon=True)
     t.start()
-    return server
 
 def main():
     global active_port, ser_global
@@ -589,11 +664,11 @@ def main():
     active_port = port
 
     print("=================================================================")
-    print("  M5StickC Plus 2 - Ponte de Voz & Antigravity (agy) v6.1")
-    print(f"  Sessão Fixa: {AGY_CONVERSATION_ID}")
+    print("  M5StickC Plus 2 - Ponte de Voz & Antigravity (agy) v7.0")
     print(f"  Porta Serial: {port} @ {baud_rate} baud")
     print(f"  Servidor HTTP de Voz: http://{lan_ip}:{port_http}/audio")
     print("  Modo Mãos-Livres (Wake-Word): 'Ei M5, [comando]'")
+    print("  Despachante Nativo PC: Chrome, YouTube, VSCode, Terminal, etc.")
     print("  Hardware IR Ativo: GPIO 19 (Ar Samsung / TV Samsung)")
     print("=================================================================")
     print("Pronto! Diga 'Ei M5' diretamente para o seu M5Stick...\n")
@@ -648,5 +723,5 @@ def main():
             print(f"[ERRO]: {e}")
             time.sleep(2)
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
