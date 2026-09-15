@@ -55,6 +55,31 @@ ser_global = None
 ser_lock = threading.Lock()
 m5_client_ip = None
 
+try:
+    import computer_use_agent
+except Exception as e:
+    print(f"[AVISO]: Módulo computer_use_agent não carregado: {e}")
+    computer_use_agent = None
+
+def send_progress_to_m5(title, body):
+    """Envia notificação de progresso intermediária para a tela do M5Stick."""
+    global ser_global, ser_lock
+    prog = {
+        "type": "RESULT",
+        "agent": "Computer Use",
+        "title": title[:18],
+        "text": "",
+        "body": body[:50],
+        "auto_resume": True
+    }
+    prog_json = json.dumps(prog, ensure_ascii=False, separators=(',', ':')) + "\n"
+    with ser_lock:
+        if ser_global and ser_global.is_open:
+            try:
+                ser_global.write(prog_json.encode('utf-8'))
+            except Exception:
+                pass
+
 def trigger_m5_ir(endpoint, params):
     """Dispara comandos infravermelho no hardware do M5StickC Plus 2 via HTTP como redundância."""
     global m5_client_ip
@@ -341,7 +366,18 @@ def parse_voice_command(text):
             }
 
     # ============================================================
-    # 3. Despachante de Ações no PC (Execução Nativa Instantânea)
+    # 3. Agente Autônomo de Computer Use (Controle Total do PC)
+    # ============================================================
+    if computer_use_agent:
+        try:
+            cu_res = computer_use_agent.handle_computer_use(text_clean, on_progress=send_progress_to_m5)
+            if cu_res:
+                return cu_res
+        except Exception as e:
+            print(f"[ERRO COMPUTER USE]: {e}")
+
+    # ============================================================
+    # 4. Despachante de Ações no PC (Execução Nativa Instantânea)
     # ============================================================
 
     # A) Navegador / Internet / Chrome
@@ -664,11 +700,11 @@ def main():
     active_port = port
 
     print("=================================================================")
-    print("  M5StickC Plus 2 - Ponte de Voz & Antigravity (agy) v7.0")
+    print("  M5StickC Plus 2 - Ponte de Voz & Computer Use v8.0")
     print(f"  Porta Serial: {port} @ {baud_rate} baud")
     print(f"  Servidor HTTP de Voz: http://{lan_ip}:{port_http}/audio")
     print("  Modo Mãos-Livres (Wake-Word): 'Ei M5, [comando]'")
-    print("  Despachante Nativo PC: Chrome, YouTube, VSCode, Terminal, etc.")
+    print("  Computer Use Nativo: Mouse, Teclado, Mídia, Visão, Janelas")
     print("  Hardware IR Ativo: GPIO 19 (Ar Samsung / TV Samsung)")
     print("=================================================================")
     print("Pronto! Diga 'Ei M5' diretamente para o seu M5Stick...\n")

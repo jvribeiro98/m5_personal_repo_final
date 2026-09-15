@@ -138,17 +138,36 @@ Para utilizar o Agente IA com o modo Alexa mãos-livres ou integração com o PC
 1. Conecte o M5StickC Plus2 na mesma rede Wi-Fi do seu computador ou via cabo USB na porta serial (`COM3`).
 2. Instale as dependências no Python (caso ainda não possua):
    ```bash
-   pip install pyserial SpeechRecognition numpy
+   pip install pyserial SpeechRecognition numpy pillow
    ```
 3. Inicie a ponte executando o script dedicado:
    ```bash
    python m5_agent_bridge.py
    ```
    *(Ou execute diretamente o atalho `iniciar_agente_m5.bat`)*
-4. Entre na tela **Agente IA** no menu do M5Stick e fale:
-   - *"Ei M5, que horas são?"*
-   - *"Ei M5, desligue o ar condicionado"* (dispara o comando físico de IR para Ar Samsung no GPIO 19).
-   - *"Ei M5, abra o projeto no VS Code"* (executa comandos e automações diretamente no seu PC via Antigravity).
+4. Entre na tela **Agente IA** no menu do M5Stick e use comandos de voz com as mãos livres:
+   - **Controle de Mídia & YouTube:**
+     - *"Ei M5, pesquise no YouTube por rock clássico e dê play"* (abre o navegador, busca, clica no primeiro vídeo e entra em tela cheia automaticamente!)
+     - *"Ei M5, pause o vídeo"* / *"Ei M5, despause"*
+     - *"Ei M5, próximo vídeo"*
+     - *"Ei M5, tela cheia"*
+   - **Controle de Volume do PC:**
+     - *"Ei M5, aumente o volume do computador"*
+     - *"Ei M5, diminua o som"*
+     - *"Ei M5, mute o computador"*
+   - **Navegação & Janelas (Controle Total na Cama/Sofá):**
+     - *"Ei M5, role para baixo"* / *"Ei M5, role para cima"*
+     - *"Ei M5, nova aba"* / *"Ei M5, feche essa aba"*
+     - *"Ei M5, alternar janela"* (Alt+Tab e relata qual janela ficou ativa)
+     - *"Ei M5, mostrar área de trabalho"* (Win+D)
+     - *"Ei M5, feche o programa"*
+     - *"Ei M5, abrir o WhatsApp"* / *"Ei M5, abrir a Netflix"*
+   - **Visão da Tela & Automações Antigravity:**
+     - *"Ei M5, o que está na tela?"* (captura o desktop em tempo real via GDI e descreve o estado atual)
+   - **Automação Residencial (IR Físico no GPIO 19):**
+     - *"Ei M5, desligue o ar condicionado"* (dispara o código físico Samsung AC)
+     - *"Ei M5, aumente a temperatura do ar"*
+     - *"Ei M5, desligue a TV"*
 
 ---
 
@@ -197,7 +216,9 @@ arduino-cli upload -p COM3 --fqbn esp32:esp32:m5stack_stickc_plus2 firmware
 │   ├── M5StickBleMouse.h     # Driver NimBLE BLE HID Mouse otimizado
 │   ├── MouseCalibration.h   # Algoritmo de calibração de repouso e zero-drift
 │   └── GestureAI.h           # Reconhecedor de gestos IMU 3D
-├── m5_agent_bridge.py        # Ponte Python de Voz, Wake-Word e Sessão Antigravity (agy)
+├── m5_agent_bridge.py        # Ponte Python v8.0 de Voz e Wake-Word Alexa
+├── computer_use_agent.py     # Agente de Computer Use (Mídia, YouTube, Rolagem, Apps)
+├── os_controller.py          # Controlador nativo do Windows (Win32 GDI, Mouse, Teclas)
 ├── iniciar_agente_m5.bat     # Inicializador rápido da ponte no Windows
 ├── web/
 │   ├── index.html            # Instalador Web Serial (GitHub Pages)
