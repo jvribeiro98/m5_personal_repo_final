@@ -18,7 +18,7 @@ names = [
     'beginWifiConnection', 'processWifiConnection', 'handleWebApiStatus',
     'handleWebApiTv', 'handleWebApiAc',
     'handleWebApiSaveNetwork', 'handleWebApiDeleteSaved', 'handleWebApiConnect',
-    'toggleAcPower', 'drawWifiSavedDetail',
+    'toggleAcPower',
     'executeAcAction', 'scanNetworksNow', 'sortScannedNetworksByRssi', 'tryAutoConnectStrongest',
     'wifiKeyboard',
     'deleteSavedNetwork',

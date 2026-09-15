@@ -31,9 +31,8 @@ void saveWebUiPreference(){}
 void stopSetupAccessPoint(){}
 void markSavedNetworkSuccess(const String&){}
 void markSavedNetworkFailure(const String&,SavedNetworkFailure){}
-void drawTitle(const String&,const String&){}
-void drawListItem(uint8_t,int y,const String&,const String& = "");
-void drawListItem(uint8_t,int y,const String&,const String&){drawnBottom=max(drawnBottom,y+23);}
+// A camada visual (ui_screens.h) fica fora do harness: so a logica e testada.
+void drawKeyboardFrame(const String&,const String&,bool,bool,int,int,const char[4][12][2],uint16_t){}
 int8_t findSavedNetwork(const String& s){for(int i=0;i<savedNetworkCount;i++)if(savedNetworks[i].ssid==s)return i;return -1;}
 bool upsertSavedNetwork(const String& s,const String& p){if(savedNetworkCount>=10)return false;savedNetworks[savedNetworkCount].ssid=s;savedNetworks[savedNetworkCount++].password=p;return true;}
 String jsonEscape(String);

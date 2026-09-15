@@ -10,6 +10,7 @@
 #include <time.h>
 #include <sys/time.h>
 #include "M5StickBleMouse.h"
+#include "ui_core.h"
 // Voice AI Module enabled
 
 // ============================================================
@@ -18,33 +19,27 @@
 // IR interno: GPIO 19
 // Orientacao: rotation 3 (emissor IR fisicamente para cima)
 //
-// Botoes:
-//   A curto  -> selecionar / executar
-//   B curto  -> proximo item
-//   B longo  -> voltar ao menu anterior
-//   C curto  -> item anterior
-//   C longo  -> desligar o M5
+// Botoes (regra unica, valida em todas as telas):
+//   A curto  -> OK / acao principal
+//   B curto  -> proximo / descer / +
+//   C curto  -> anterior / subir / -   (em tela sem lista: voltar)
+//   B longo  -> voltar
+//   C longo  -> voltar  (no menu principal: desligar)
+// Excecoes explicitas, sempre indicadas no rodape da propria tela:
+//   Teclado   -> B/C longos movem entre linhas
+//   Air Mouse -> A/B sao os botoes do mouse, C longo recalibra
+//   Voz       -> B curto em resposta = descer, C curto = subir
+// A e B usam o mesmo limiar de "segurar" que C (BTN_HOLD_MS).
 // ============================================================
 
 constexpr uint8_t IR_PIN = 19;
 constexpr uint8_t BTN_C_PIN = 35;
 constexpr uint32_t BTN_C_DEBOUNCE_MS = 35;
-constexpr uint32_t BTN_C_HOLD_MS = 1200;
+constexpr uint32_t BTN_HOLD_MS = 1200;          // segurar = 1,2 s em A, B e C
+constexpr uint32_t KEYBOARD_HOLD_MS = 450;      // dentro do teclado o "segurar" e mais curto
+constexpr uint32_t BTN_C_HOLD_MS = BTN_HOLD_MS; // compatibilidade
 
-// Cores RGB565.
-constexpr uint16_t UI_BG         = 0x0000; // True Black OLED
-constexpr uint16_t UI_PANEL      = 0x1084; // Obsidian Slate
-constexpr uint16_t UI_PANEL_ALT  = 0x18C6; // Elevated Card
-constexpr uint16_t UI_BORDER     = 0x2126; // Subtle Border
-constexpr uint16_t UI_SELECTED   = 0x067F; // Electric Cyan
-constexpr uint16_t UI_TEXT       = 0xFFFF; // Pure White
-constexpr uint16_t UI_MUTED      = 0x8CD1; // Metallic Silver
-constexpr uint16_t UI_GREEN      = 0x27E8; // Cyber Mint
-constexpr uint16_t UI_RED        = 0xF9C7; // Coral Red
-constexpr uint16_t UI_YELLOW     = 0xFDE0; // Cyber Gold
-constexpr uint16_t UI_ORANGE     = 0xFD20; // Neon Orange
-constexpr uint16_t UI_PURPLE     = 0xB29F; // Magic Purple
-constexpr uint16_t UI_CYAN       = 0x05BF; // Bright Cyan
+// Cores: a paleta inteira vive em ui_core.h (namespace ui).
 
 // ============================================================
 // TIPOS - ficam antes de qualquer funcao para evitar problemas
@@ -208,6 +203,7 @@ struct ButtonCState {
   bool holdEvent = false;
   uint32_t changedAt = 0;
   uint32_t pressedAt = 0;
+  uint32_t holdMs = BTN_HOLD_MS;
 
   void begin();
   void update();
@@ -292,10 +288,8 @@ uint8_t activeAc = 0;
 bool redraw = true;
 bool forceFullRedraw = true;
 
-String toast;
-uint32_t toastUntil = 0;
 inline bool isToastActive() {
-  return toast.length() > 0 && ((int32_t)(toastUntil - millis()) > 0);
+  return ui::toastActive();
 }
 ButtonCState buttonC;
 
@@ -360,20 +354,16 @@ time_t weatherUpdatedAt = 0;
 bool weatherLocationValid = false;
 bool weatherUpdatePending = false;
 
-// --- Relogio Cyberdeck & Watchface ---
-uint8_t currentWatchfaceStyle = 0; // 0: CYBER HUD, 1: BIG NEON, 2: MATRIX TERMINAL
+// --- Relogio / Watchface ---
+uint8_t currentWatchfaceStyle = 0; // 0: AURORA, 1: MINIMAL, 2: PAINEL
 bool clockReturnToSettings = false;
-void drawWeatherIcon(int x, int y, float temp, bool connected);
-void drawCyberWatchface(bool fullClear);
 String clockDayOfWeekText();
 
 bool isMenuScreen(Screen value);
-void drawWifiIcon(int x, int y, bool connected);
-void drawBatteryGauge(int x, int y, int battery, bool charging);
+bool screenUsesPreviousItem();
 void updateBatteryState(bool forceNow = false);
 int getBatteryLevelCached();
 bool isBatteryChargingCached();
-void drawStatusBar();
 void updateStatusBarClock();
 void drawClockScreen(bool fullClear = true);
 void processDisplayIdle(bool anyButtonPressed);
@@ -461,6 +451,9 @@ void processVoiceAiScreen();
 void initVoiceAiScreen();
 void startVoiceRecording();
 void stopVoiceRecordingAndSend();
+void stopVoiceMic();
+void cancelVoiceRecording();
+void exitVoiceScreen();
 void parseVoiceAiResponse(const String& line);
 void executeLocalIrCommand(const String& cmd);
 int countWrappedTextLines(int maxW, const String& text);
@@ -637,11 +630,6 @@ void cycleAcMode();
 void cycleAcFan();
 void cycleAcSleep();
 void executeAcAction(uint8_t action);
-void drawFooter();
-void drawTitle(const String& title, const String& subtitle = "");
-void drawListItem(uint8_t index, int y, const String& label, const String& detail = "");
-void drawGridButton(uint8_t index, int x, int y, int w, int h,
-                    const String& label, const String& value = "");
 void drawMain();
 void drawWifiMenu();
 void drawWifiScanning();
@@ -697,6 +685,8 @@ bool parseIndexArg(const char* name, int count, int& result);
 String acStateJson(uint8_t device);
 void handleWebApiAcState();
 
+#include "ui_screens.h"
+
 // ============================================================
 // BOTAO C
 // ============================================================
@@ -733,7 +723,7 @@ void ButtonCState::update() {
     }
   }
 
-  if (stablePressed && !holdSent && now - pressedAt >= BTN_C_HOLD_MS) {
+  if (stablePressed && !holdSent && now - pressedAt >= holdMs) {
     holdSent = true;
     holdEvent = true;
   }
@@ -916,8 +906,7 @@ bool normalizeTrainingCandidate(int direction) {
 // ============================================================
 
 void showToast(const String& message, uint16_t duration) {
-  toast = message;
-  toastUntil = millis() + duration;
+  ui::showToast(message, duration, ui::GREEN);
   redraw = true;
 }
 
@@ -2590,10 +2579,10 @@ void syncWebUiState() {
 // A curto       = selecionar
 // B curto       = mover para direita
 // C curto       = mover para esquerda
-// B longo       = mover para baixo
+// B longo       = mover para baixo   (limiar KEYBOARD_HOLD_MS, igual para B e C)
 // C longo       = mover para cima
 //
-// Fora do teclado, C longo continua desligando o aparelho.
+// Sair do teclado e sempre pela tecla "EX"; B/C longos nao voltam aqui.
 // ============================================================
 
 const char BRUCE_KEYS[4][12][2] = {
@@ -2611,7 +2600,12 @@ String wifiKeyboard(const String& title, const String& initial, bool masked, boo
   bool redrawKeyboard = true;
   cancelled = false;
   wifiKeyboardActive = true;
+  // No teclado, "segurar" e mais curto e simetrico entre B (baixo) e C (cima).
+  M5.BtnB.setHoldThresh(KEYBOARD_HOLD_MS);
+  buttonC.holdMs = KEYBOARD_HOLD_MS;
   auto finish = [&](const String& value) {
+    M5.BtnB.setHoldThresh(BTN_HOLD_MS);
+    buttonC.holdMs = BTN_HOLD_MS;
     wifiKeyboardActive = false;
     redraw = true;
     return value;
@@ -2626,61 +2620,11 @@ String wifiKeyboard(const String& title, const String& initial, bool masked, boo
   buttonC.update();
   updateBatteryState(false);
 
+    static uint32_t caretBlinkAt = 0;
+    if (millis() - caretBlinkAt >= 500) { caretBlinkAt = millis(); redrawKeyboard = true; }
     if (redrawKeyboard) {
       redrawKeyboard = false;
-      auto& d = getGfx();
-      d.fillScreen(UI_BG);
-
-      const char* actions[] = {"OK", "A@", "<-", "_", "EX"};
-      const int actionX[] = {3, 48, 93, 138, 183};
-      const int actionW = 42;
-
-      for (int i = 0; i < 5; i++) {
-        bool active = y == -1 && x == i;
-        uint16_t bg = active ? UI_SELECTED : UI_PANEL;
-        d.fillRoundRect(actionX[i], 2, actionW, 18, 3, bg);
-        d.drawRoundRect(actionX[i], 2, actionW, 18, 3, active ? UI_SELECTED : UI_BORDER);
-        d.setTextDatum(middle_center);
-        d.setTextSize(1);
-        d.setTextColor(active ? UI_BG : UI_TEXT, bg);
-        String label = actions[i];
-        if (i == 1) label = caps ? "ab" : "A@";
-        d.drawString(label, actionX[i] + actionW / 2, 11);
-      }
-
-      d.setTextDatum(top_left);
-      d.setTextColor(UI_MUTED, UI_BG);
-      d.drawString(title.substring(0, 25), 3, 23);
-      d.setTextDatum(top_right);
-      d.drawString(String(text.length()) + "/63", 237, 23);
-
-      d.drawRoundRect(3, 34, 234, 19, 3, UI_SELECTED);
-      d.setTextDatum(middle_left);
-      d.setTextColor(UI_TEXT, UI_BG);
-      String shown;
-      if (masked) { for (size_t i = 0; i < text.length(); i++) shown += '*'; }
-      else shown = text;
-      if (shown.length() > 36) shown = "..." + shown.substring(shown.length() - 33);
-      d.drawString(shown, 7, 43);
-
-      const int keyW = 20;
-      const int keyH = 19;
-      const int startY = 56;
-
-      for (int row = 0; row < 4; row++) {
-        for (int col = 0; col < 12; col++) {
-          int keyX = col * keyW;
-          int keyY = startY + row * keyH;
-          bool active = y == row && x == col;
-          uint16_t bg = active ? UI_SELECTED : UI_BG;
-          d.fillRect(keyX, keyY, keyW, keyH, bg);
-          d.drawRect(keyX, keyY, keyW, keyH, UI_BORDER);
-          d.setTextDatum(middle_center);
-          d.setTextColor(active ? UI_BG : UI_TEXT, bg);
-          d.drawString(String(BRUCE_KEYS[row][col][caps ? 1 : 0]), keyX + keyW / 2, keyY + keyH / 2);
-        }
-      }
-      uiCanvas.pushSprite(0, 0);
+      drawKeyboardFrame(title, text, masked, caps, x, y, BRUCE_KEYS, ui::BLUE);
     }
 
     // Longos têm prioridade sobre os curtos.
@@ -2740,6 +2684,28 @@ String wifiKeyboard(const String& title, const String& initial, bool masked, boo
 // SISTEMA: STATUS, RELOGIO, CLIMA E DESCANSO DE TELA
 // ============================================================
 
+// Telas em que C curto faz "anterior/subir" (inverso de B curto).
+// Nas demais, C curto volta.
+bool screenUsesPreviousItem() {
+  switch (screen) {
+    case Screen::SETTINGS_CLOCK:   // B troca o estilo; C volta (rodape "[C] Voltar").
+    case Screen::WIFI_RESULT:
+    case Screen::WIFI_AP_INFO:
+    case Screen::WIFI_WEBUI_NETWORK:
+    case Screen::WIFI_SCANNING:
+    case Screen::WIFI_CONNECTING:
+    case Screen::WIFI_KEYBOARD:
+    case Screen::SETTINGS_SLEEP:
+    case Screen::TEAM_CATTLE_RESET_CONFIRM:
+    case Screen::TEAM_TRAIN_END_CONFIRM:
+    case Screen::MOUSE:
+    case Screen::VOICE_AI:
+      return false;
+    default:
+      return itemCount() > 1;
+  }
+}
+
 bool isMenuScreen(Screen value) {
   switch (value) {
     case Screen::MAIN:
@@ -2763,6 +2729,7 @@ void loadSystemSettings() {
   prefs.begin("system", true);
   brightnessIndex = min<uint8_t>(4, prefs.getUChar("bright", 2));
   currentWatchfaceStyle = prefs.getUChar("wf_style", 0) % 3;
+  uiState.soundEnabled = prefs.getBool("snd", true);
   prefs.end();
   M5.Display.setBrightness(BRIGHTNESS_LEVELS[brightnessIndex]);
 }
@@ -2770,6 +2737,7 @@ void loadSystemSettings() {
 void saveSystemSettings() {
   prefs.begin("system", false);
   prefs.putUChar("bright", brightnessIndex);
+  prefs.putBool("snd", uiState.soundEnabled);
   prefs.end();
 }
 
@@ -2989,35 +2957,6 @@ void processWeatherAndClock() {
   }
 }
 
-void drawWifiIcon(int x, int y, bool connected) {
-  auto& d = getGfx();
-  uint16_t col = connected ? UI_GREEN : UI_MUTED;
-
-  // Ponto base
-  d.fillRect(x + 5, y + 9, 2, 2, col);
-
-  // Arco 1 (interno)
-  d.drawPixel(x + 2, y + 7, col);
-  d.drawPixel(x + 3, y + 6, col);
-  d.drawFastHLine(x + 4, y + 5, 4, col);
-  d.drawPixel(x + 8, y + 6, col);
-  d.drawPixel(x + 9, y + 7, col);
-
-  // Arco 2 (externo)
-  d.drawPixel(x + 0, y + 4, col);
-  d.drawPixel(x + 1, y + 3, col);
-  d.drawPixel(x + 2, y + 2, col);
-  d.drawFastHLine(x + 3, y + 1, 6, col);
-  d.drawPixel(x + 9, y + 2, col);
-  d.drawPixel(x + 10, y + 3, col);
-  d.drawPixel(x + 11, y + 4, col);
-
-  // Se desconectado, barra diagonal vermelha marcando corte/desconexao
-  if (!connected) {
-    d.drawLine(x + 0, y + 11, x + 11, y + 0, UI_RED);
-    d.drawLine(x + 1, y + 11, x + 12, y + 0, UI_RED);
-  }
-}
 
 // ============================================================
 // GERENCIADOR DE BATERIA ESTAVEL (FILTRO IIR, OVERSAMPLING E HISTERESE)
@@ -3084,52 +3023,7 @@ bool isBatteryChargingCached() {
   return s_cachedBatteryCharging;
 }
 
-void drawBatteryGauge(int x, int y, int battery, bool charging) {
-  auto& d = getGfx();
-  uint16_t bColor = UI_GREEN;
-  if (charging) bColor = UI_CYAN;
-  else if (battery <= 20) bColor = UI_RED;
-  else if (battery <= 45) bColor = UI_YELLOW;
 
-  // Limpa area do icone + texto para evitar sobreposicao de digitos
-  d.fillRect(x, y, 58, 12, UI_BG);
-
-  // Carcaca metalica da bateria com terminal
-  d.drawRoundRect(x, y, 20, 10, 2, UI_BORDER);
-  d.fillRect(x + 20, y + 2, 2, 6, UI_BORDER);
-
-  // Barra proporcional de nivel (0 a 100% -> 0 a 16px)
-  int fillW = map(constrain(battery, 0, 100), 0, 100, 0, 16);
-  if (fillW > 0) {
-    d.fillRect(x + 2, y + 2, fillW, 6, bColor);
-  }
-
-  // Mostrador numerico de porcentagem
-  d.setTextDatum(middle_left);
-  d.setTextSize(1);
-  d.setTextColor(bColor, UI_BG);
-  String batStr = charging ? (String(battery) + "%+") : (String(battery) + "%");
-  d.drawString(batStr, x + 25, y + 5);
-}
-
-void drawStatusBar() {
-  auto& d = getGfx();
-
-  // 1. Wi-Fi icone grafico (centrado e com status conectado / desconectado)
-  bool wifiConnected = (WiFi.status() == WL_CONNECTED);
-  drawWifiIcon(104, 7, wifiConnected);
-
-  // 2. Bateria com mostrador estavel (cache filtrado sem oscilacao)
-  int battery = getBatteryLevelCached();
-  bool charging = isBatteryChargingCached();
-  drawBatteryGauge(126, 8, battery, charging);
-
-  // 3. Relogio digital de alto contraste
-  d.setTextDatum(middle_right);
-  d.setTextSize(1);
-  d.setTextColor(clockIsValid() ? UI_YELLOW : UI_MUTED, UI_BG);
-  d.drawString(clockTimeText(), 234, 13);
-}
 
 void updateStatusBarClock() {
   if (!isMenuScreen(screen)) return;
@@ -3147,299 +3041,8 @@ String clockDayOfWeekText() {
   return "---";
 }
 
-void drawWeatherIcon(int x, int y, float temp, bool connected) {
-  auto& d = getGfx();
-  if (!connected && isnan(temp)) {
-    d.drawCircle(x + 7, y + 7, 6, UI_MUTED);
-    d.drawFastHLine(x + 1, y + 7, 12, UI_MUTED);
-    d.drawFastVLine(x + 7, y + 1, 12, UI_MUTED);
-    return;
-  }
-  if (!isnan(temp) && temp >= 22.0f) {
-    d.fillCircle(x + 7, y + 7, 4, UI_YELLOW);
-    d.drawCircle(x + 7, y + 7, 4, UI_ORANGE);
-    d.drawFastVLine(x + 7, y + 1, 2, UI_YELLOW);
-    d.drawFastVLine(x + 7, y + 12, 2, UI_YELLOW);
-    d.drawFastHLine(x + 1, y + 7, 2, UI_YELLOW);
-    d.drawFastHLine(x + 12, y + 7, 2, UI_YELLOW);
-    d.drawPixel(x + 3, y + 3, UI_YELLOW);
-    d.drawPixel(x + 11, y + 3, UI_YELLOW);
-    d.drawPixel(x + 3, y + 11, UI_YELLOW);
-    d.drawPixel(x + 11, y + 11, UI_YELLOW);
-  } else {
-    d.fillCircle(x + 5, y + 8, 3, UI_CYAN);
-    d.fillCircle(x + 9, y + 7, 4, UI_TEXT);
-    d.fillRoundRect(x + 2, y + 7, 12, 5, 2, UI_CYAN);
-  }
-}
 
-void drawCyberWatchface(bool fullClear) {
-  auto& d = getGfx();
 
-  time_t now = time(nullptr);
-  tm value;
-  localtime_r(&now, &value);
-  const int hour = value.tm_hour;
-  const int min = value.tm_min;
-  const int sec = value.tm_sec;
-  const bool secEven = (sec % 2 == 0);
-  const int battery = getBatteryLevelCached();
-  const bool charging = isBatteryChargingCached();
-  const bool wifiConnected = (WiFi.status() == WL_CONNECTED);
-
-  if (fullClear) {
-    d.fillScreen(UI_BG);
-  }
-
-  // ============================================================
-  // ESTILO 0: CYBER HUD (Painéis Obsidian, Bateria, Wi-Fi & Barra 60s)
-  // ============================================================
-  if (currentWatchfaceStyle == 0) {
-    if (fullClear) {
-      d.fillRoundRect(6, 3, 90, 16, 3, UI_PANEL);
-      d.drawRoundRect(6, 3, 90, 16, 3, UI_CYAN);
-      d.setTextDatum(middle_center);
-      d.setTextSize(1);
-      d.setTextColor(UI_CYAN, UI_PANEL);
-      d.drawString("CHRONO // OS", 51, 11);
-      d.drawFastHLine(0, 22, 240, UI_BORDER);
-    }
-    d.fillRect(100, 3, 134, 18, UI_BG);
-    drawWifiIcon(112, 5, wifiConnected);
-    drawBatteryGauge(134, 6, battery, charging);
-
-    if (fullClear) {
-      d.fillRoundRect(6, 26, 144, 54, 4, UI_PANEL);
-      d.drawRoundRect(6, 26, 144, 54, 4, UI_BORDER);
-      d.fillRoundRect(8, 30, 3, 46, 1, UI_CYAN);
-    } else {
-      d.fillRect(14, 28, 134, 48, UI_PANEL);
-    }
-
-    char hBuf[4], mBuf[4];
-    snprintf(hBuf, sizeof(hBuf), "%02d", hour);
-    snprintf(mBuf, sizeof(mBuf), "%02d", min);
-
-    d.setTextDatum(middle_left);
-    d.setTextSize(4);
-    d.setTextColor(clockIsValid() ? UI_TEXT : UI_MUTED, UI_PANEL);
-    d.drawString(hBuf, 16, 48);
-    d.setTextColor(secEven ? UI_CYAN : UI_MUTED, UI_PANEL);
-    d.drawString(":", 62, 46);
-    d.setTextColor(clockIsValid() ? UI_TEXT : UI_MUTED, UI_PANEL);
-    d.drawString(mBuf, 74, 48);
-
-    d.fillRoundRect(120, 32, 26, 16, 3, UI_PANEL_ALT);
-    d.drawRoundRect(120, 32, 26, 16, 3, UI_ORANGE);
-    char sBuf[6];
-    snprintf(sBuf, sizeof(sBuf), ":%02d", sec);
-    d.setTextDatum(middle_center);
-    d.setTextSize(1);
-    d.setTextColor(UI_ORANGE, UI_PANEL_ALT);
-    d.drawString(sBuf, 133, 40);
-
-    const char* days[] = {"DOM", "SEG", "TER", "QUA", "QUI", "SEX", "SAB"};
-    const char* dayName = (value.tm_wday >= 0 && value.tm_wday <= 6) ? days[value.tm_wday] : "---";
-    char dBuf[28];
-    snprintf(dBuf, sizeof(dBuf), "[%s] %02d/%02d/%04d", dayName, value.tm_mday, value.tm_mon + 1, value.tm_year + 1900);
-    d.setTextDatum(middle_left);
-    d.setTextSize(1);
-    d.setTextColor(UI_YELLOW, UI_PANEL);
-    d.drawString(dBuf, 16, 68);
-
-    if (fullClear) {
-      d.fillRoundRect(154, 26, 80, 54, 4, UI_PANEL);
-      d.drawRoundRect(154, 26, 80, 54, 4, UI_BORDER);
-      d.setTextDatum(middle_left);
-      d.setTextSize(1);
-      d.setTextColor(UI_MUTED, UI_PANEL);
-      d.drawString("METEO", 182, 35);
-    }
-    d.fillRect(156, 44, 76, 34, UI_PANEL);
-    drawWeatherIcon(162, 29, weatherTemperature, wifiConnected);
-
-    d.setTextDatum(middle_center);
-    d.setTextSize(2);
-    d.setTextColor(UI_YELLOW, UI_PANEL);
-    String tempStr = isnan(weatherTemperature) ? "-- C" : String((int)round(weatherTemperature)) + " C";
-    d.drawString(tempStr, 194, 53);
-
-    d.setTextSize(1);
-    d.setTextColor(UI_CYAN, UI_PANEL);
-    String cityStr = weatherCity.length() ? weatherCity.substring(0, 8) : (wifiConnected ? "NTP OK" : "OFFLINE");
-    d.drawString(cityStr, 194, 70);
-
-    d.fillRect(6, 83, 228, 5, UI_BG);
-    d.fillRoundRect(6, 83, 228, 4, 2, UI_PANEL);
-    int progW = map(sec, 0, 59, 4, 228);
-    d.fillRoundRect(6, 83, progW, 4, 2, UI_CYAN);
-    d.fillCircle(constrain(6 + progW, 6, 233), 85, 2, UI_TEXT);
-    d.drawFastVLine(63, 83, 4, UI_BORDER);
-    d.drawFastVLine(120, 83, 4, UI_BORDER);
-    d.drawFastVLine(177, 83, 4, UI_BORDER);
-
-    if (fullClear) {
-      d.fillRoundRect(6, 90, 112, 29, 3, UI_PANEL);
-      d.drawRoundRect(6, 90, 112, 29, 3, UI_BORDER);
-      d.fillRoundRect(122, 90, 112, 29, 3, UI_PANEL);
-      d.drawRoundRect(122, 90, 112, 29, 3, UI_BORDER);
-    } else {
-      d.fillRect(8, 92, 108, 25, UI_PANEL);
-      d.fillRect(124, 92, 108, 25, UI_PANEL);
-    }
-    d.setTextDatum(middle_left);
-    d.setTextSize(1);
-    d.setTextColor(wifiConnected ? UI_GREEN : UI_RED, UI_PANEL);
-    d.drawString(wifiConnected ? ("WF: " + WiFi.SSID().substring(0, 9)) : "WF: OFFLINE", 10, 98);
-    d.setTextColor(clockIsValid() ? UI_CYAN : UI_MUTED, UI_PANEL);
-    d.drawString(clockIsValid() ? "NTP: SINCRONIZADO" : "NTP: PENDENTE", 10, 110);
-
-    d.setTextColor(UI_MUTED, UI_PANEL);
-    d.drawString("RAM: " + String(ESP.getFreeHeap() / 1024) + "KB", 126, 98);
-    d.setTextColor(UI_YELLOW, UI_PANEL);
-    d.drawString("UP: " + String(millis() / 60000) + "m" + (charging ? " [CHG]" : ""), 126, 110);
-
-    if (fullClear) {
-      d.fillRect(0, 122, 240, 13, UI_BG);
-      d.setTextDatum(middle_center);
-      d.setTextSize(1);
-      d.setTextColor(UI_MUTED, UI_BG);
-      d.drawString("[A] Sync    [B] Estilo    [C] Voltar", 120, 128);
-    }
-  }
-  // ============================================================
-  // ESTILO 1: BIG NEON (Minimalista Gigante)
-  // ============================================================
-  else if (currentWatchfaceStyle == 1) {
-    if (fullClear) {
-      d.drawFastHLine(0, 19, 240, UI_BORDER);
-      d.fillRoundRect(8, 23, 224, 64, 5, UI_PANEL);
-      d.drawRoundRect(8, 23, 224, 64, 5, UI_CYAN);
-      d.fillRoundRect(10, 27, 4, 56, 2, UI_CYAN);
-    }
-    d.fillRect(4, 2, 232, 16, UI_BG);
-    d.setTextDatum(middle_left);
-    d.setTextSize(1);
-    d.setTextColor(UI_GREEN, UI_BG);
-    char dateTop[24];
-    const char* days[] = {"DOM", "SEG", "TER", "QUA", "QUI", "SEX", "SAB"};
-    const char* dn = (value.tm_wday >= 0 && value.tm_wday <= 6) ? days[value.tm_wday] : "---";
-    snprintf(dateTop, sizeof(dateTop), "[%s] %02d/%02d/%04d", dn, value.tm_mday, value.tm_mon + 1, value.tm_year + 1900);
-    d.drawString(dateTop, 8, 10);
-    drawWifiIcon(120, 4, wifiConnected);
-    drawBatteryGauge(144, 5, battery, charging);
-
-    d.fillRect(16, 26, 156, 58, UI_PANEL);
-    char hBuf[4], mBuf[4];
-    snprintf(hBuf, sizeof(hBuf), "%02d", hour);
-    snprintf(mBuf, sizeof(mBuf), "%02d", min);
-    d.setTextDatum(middle_left);
-    d.setTextSize(5);
-    d.setTextColor(clockIsValid() ? UI_TEXT : UI_MUTED, UI_PANEL);
-    d.drawString(hBuf, 20, 56);
-    d.setTextColor(secEven ? UI_CYAN : UI_MUTED, UI_PANEL);
-    d.drawString(":", 76, 53);
-    d.setTextColor(clockIsValid() ? UI_TEXT : UI_MUTED, UI_PANEL);
-    d.drawString(mBuf, 92, 56);
-
-    d.fillRoundRect(178, 34, 44, 24, 3, UI_PANEL_ALT);
-    d.drawRoundRect(178, 34, 44, 24, 3, UI_ORANGE);
-    char sBuf[6];
-    snprintf(sBuf, sizeof(sBuf), "%02d", sec);
-    d.setTextDatum(middle_center);
-    d.setTextSize(2);
-    d.setTextColor(UI_ORANGE, UI_PANEL_ALT);
-    d.drawString(sBuf, 200, 46);
-
-    if (fullClear) {
-      d.fillRoundRect(8, 91, 224, 25, 4, UI_PANEL);
-      d.drawRoundRect(8, 91, 224, 25, 4, UI_BORDER);
-    } else {
-      d.fillRect(10, 93, 220, 21, UI_PANEL);
-    }
-    drawWeatherIcon(16, 95, weatherTemperature, wifiConnected);
-    d.setTextDatum(middle_left);
-    d.setTextSize(1);
-    d.setTextColor(UI_YELLOW, UI_PANEL);
-    String wInfo = (isnan(weatherTemperature) ? "-- C" : String((int)round(weatherTemperature)) + " C") + "  " + (weatherCity.length() ? weatherCity.substring(0, 10) : "LOCAL") + "  •  " + (wifiConnected ? "SYNC OK" : "OFFLINE");
-    d.drawString(wInfo, 36, 103);
-
-    d.fillRect(8, 119, 224, 4, UI_PANEL);
-    d.fillRoundRect(8, 119, map(sec, 0, 59, 4, 224), 4, 2, UI_GREEN);
-
-    if (fullClear) {
-      d.fillRect(0, 125, 240, 10, UI_BG);
-      d.setTextDatum(middle_center);
-      d.setTextSize(1);
-      d.setTextColor(UI_MUTED, UI_BG);
-      d.drawString("[A] Sync    [B] Estilo    [C] Voltar", 120, 129);
-    }
-  }
-  // ============================================================
-  // ESTILO 2: MATRIX TERMINAL (Console Hacker)
-  // ============================================================
-  else {
-    if (fullClear) {
-      d.fillRect(0, 0, 240, 15, UI_PANEL);
-      d.setTextDatum(middle_left);
-      d.setTextSize(1);
-      d.setTextColor(UI_GREEN, UI_PANEL);
-      d.drawString("root@m5stick:~# sys_clock --live", 6, 7);
-      d.drawFastHLine(0, 15, 240, UI_GREEN);
-    }
-    drawWifiIcon(192, 2, wifiConnected);
-
-    d.fillRect(0, 18, 240, 104, UI_BG);
-    d.setTextDatum(middle_left);
-    d.setTextSize(1);
-
-    char l1[45];
-    snprintf(l1, sizeof(l1), "TIME  > [ %02d:%02d:%02d ]  BRT (UTC-3)", hour, min, sec);
-    d.setTextColor(UI_GREEN, UI_BG);
-    d.drawString(l1, 6, 26);
-
-    char l2[45];
-    const char* days[] = {"DOM", "SEG", "TER", "QUA", "QUI", "SEX", "SAB"};
-    const char* dn = (value.tm_wday >= 0 && value.tm_wday <= 6) ? days[value.tm_wday] : "---";
-    snprintf(l2, sizeof(l2), "DATE  > %02d/%02d/%04d (%s)", value.tm_mday, value.tm_mon + 1, value.tm_year + 1900, dn);
-    d.setTextColor(UI_CYAN, UI_BG);
-    d.drawString(l2, 6, 40);
-
-    String l3 = "METEO > " + (isnan(weatherTemperature) ? String("--.-") : String((int)round(weatherTemperature))) + " C | " + (weatherCity.length() ? weatherCity.substring(0, 10) : "OFFLINE");
-    d.setTextColor(UI_YELLOW, UI_BG);
-    d.drawString(l3, 6, 54);
-
-    String l4 = "NET   > " + (wifiConnected ? ("SSID: " + WiFi.SSID().substring(0, 12)) : "DESCONECTADO") + " | " + (clockIsValid() ? "NTP:OK" : "NTP:--");
-    d.setTextColor(wifiConnected ? UI_GREEN : UI_RED, UI_BG);
-    d.drawString(l4, 6, 68);
-
-    String l5 = "POWER > BAT: " + String(battery) + "% " + (charging ? "[CARREGANDO]" : "[BATERIA]") + " | " + String(ESP.getFreeHeap()/1024) + "KB";
-    d.setTextColor(UI_TEXT, UI_BG);
-    d.drawString(l5, 6, 82);
-
-    String l6 = "SYS   > UP: " + String(millis() / 60000) + " min | CPU: 240MHz";
-    d.setTextColor(UI_MUTED, UI_BG);
-    d.drawString(l6, 6, 96);
-
-    d.setTextColor(UI_GREEN, UI_BG);
-    d.drawString("m5stick@os:~$ " + String(secEven ? "_" : " "), 6, 110);
-
-    if (fullClear) {
-      d.fillRect(0, 124, 240, 11, UI_BG);
-      d.setTextDatum(middle_center);
-      d.setTextSize(1);
-      d.setTextColor(UI_MUTED, UI_BG);
-      d.drawString("[A] Sync    [B] Estilo    [C] Voltar", 120, 128);
-    }
-  }
-
-  uiCanvas.pushSprite(0, 0);
-  lastClockRedrawAt = millis();
-}
-
-void drawClockScreen(bool fullClear) {
-  drawCyberWatchface(fullClear);
-}
 
 void restoreDisplayFromIdle() {
   displayIdleState = DisplayIdleState::ACTIVE;
@@ -3490,1036 +3093,49 @@ void processDisplayIdle(bool anyButtonPressed) {
   }
 }
 
-void drawSettingsMenu() {
-  drawTitle("CONFIGURACOES");
-  drawListItem(0, 40, "BRILHO", String((brightnessIndex + 1) * 20) + "%");
-  drawListItem(1, 67, "RELOGIO CYBER", clockTimeText());
-  drawListItem(2, 94, "DESCANSO DE TELA", "3 + 10 min");
-}
 
-void drawSettingsBrightness() {
-  auto& display = getGfx();
-  drawTitle("BRILHO", String((brightnessIndex + 1) * 20) + "%");
-  display.fillRect(30, 42, 180, 58, UI_BG);
-  display.setTextDatum(middle_center);
-  display.setTextColor(UI_TEXT, UI_BG);
-  display.setTextSize(5);
-  display.drawString(String((brightnessIndex + 1) * 20) + "%", 120, 76);
-  display.setTextSize(1);
-  display.setTextColor(UI_MUTED, UI_BG);
-  display.drawString("B/C ALTERA  A SALVA", 120, 108);
-}
 
-void drawSettingsClock() {
-  drawCyberWatchface(forceFullRedraw);
-}
 
-void drawSettingsSleep() {
-  auto& display = getGfx();
-  drawTitle("DESCANSO DE TELA");
-  display.setTextDatum(middle_center);
-  display.setTextSize(2);
-  display.setTextColor(UI_TEXT, UI_BG);
-  display.drawString("3 MIN", 120, 55);
-  display.setTextSize(1);
-  display.setTextColor(UI_MUTED, UI_BG);
-  display.drawString("RELOGIO COM BRILHO BAIXO", 120, 77);
-  display.setTextSize(2);
-  display.setTextColor(UI_TEXT, UI_BG);
-  display.drawString("+ 10 MIN", 120, 98);
-  display.setTextSize(1);
-  display.setTextColor(UI_MUTED, UI_BG);
-  display.drawString("TELA APAGADA / SISTEMA ATIVO", 120, 116);
-}
 
 // ============================================================
 // INTERFACE
 // ============================================================
 
-void drawFooter() {
-  auto& display = getGfx();
-  display.fillRect(0, 120, 240, 15, UI_BG);
-  display.setTextSize(1);
-
-  if (isToastActive()) {
-    display.fillRoundRect(8, 119, 224, 15, 3, UI_PANEL_ALT);
-    display.setTextDatum(middle_center);
-    display.setTextColor(UI_GREEN, UI_PANEL_ALT);
-    display.drawString(toast, 120, 126);
-    return;
-  }
-
-    // Footer especifico para Agente IA
-  if (screen == Screen::VOICE_AI) {
-    display.fillRoundRect(4, 121, 14, 11, 2, UI_ORANGE);
-    display.setTextColor(UI_BG, UI_ORANGE);
-    display.setTextDatum(middle_center);
-    display.drawString("A", 11, 126);
-    display.setTextColor(UI_TEXT, UI_BG);
-    display.setTextDatum(middle_left);
-    if (voiceState == VoiceState::LISTENING) {
-      display.drawString("Enviar", 21, 126);
-    } else {
-      display.drawString("Falar", 21, 126);
-    }
-
-    display.fillRoundRect(66, 121, 14, 11, 2, UI_CYAN);
-    display.setTextColor(UI_BG, UI_CYAN);
-    display.setTextDatum(middle_center);
-    display.drawString("B", 73, 126);
-    display.setTextColor(UI_TEXT, UI_BG);
-    display.setTextDatum(middle_left);
-    if (voiceState == VoiceState::RESULT) {
-      display.drawString("▼ Descer", 83, 126);
-    } else if (voiceState == VoiceState::IDLE) {
-      display.drawString(voiceInputMode == VoiceInputMode::PTT ? "Modo: PTT" : "Modo: VOX", 83, 126);
-    } else {
-      display.drawString("Cancelar", 83, 126);
-    }
-
-    display.fillRoundRect(152, 121, 14, 11, 2, UI_MUTED);
-    display.setTextColor(UI_BG, UI_MUTED);
-    display.setTextDatum(middle_center);
-    display.drawString("C", 159, 126);
-    display.setTextColor(UI_TEXT, UI_BG);
-    display.setTextDatum(middle_left);
-    if (voiceState == VoiceState::RESULT) {
-      display.drawString("▲ Subir", 169, 126);
-    } else {
-      display.drawString("Voltar", 169, 126);
-    }
-    return;
-  }
-
-  // Footer especifico para BOIS SORTEADOS
-  if (screen == Screen::TEAM_CATTLE_COUNTER) {
-    const uint8_t remaining = cattleRemainingCount();
-    display.fillRoundRect(6, 121, 14, 11, 2, remaining <= 1 ? UI_GREEN : UI_ORANGE);
-    display.setTextColor(UI_BG, remaining <= 1 ? UI_GREEN : UI_ORANGE);
-    display.setTextDatum(middle_center);
-    display.drawString("A", 13, 126);
-    display.setTextColor(UI_TEXT, UI_BG);
-    display.setTextDatum(middle_left);
-    display.drawString(remaining <= 1 ? "Reiniciar" : "Marcar", 23, 126);
-
-    display.fillRoundRect(78, 121, 14, 11, 2, UI_CYAN);
-    display.setTextColor(UI_BG, UI_CYAN);
-    display.setTextDatum(middle_center);
-    display.drawString("B", 85, 126);
-    display.setTextColor(UI_TEXT, UI_BG);
-    display.setTextDatum(middle_left);
-    display.drawString("Prox", 95, 126);
-
-    display.fillRoundRect(128, 121, 14, 11, 2, UI_MUTED);
-    display.setTextColor(UI_BG, UI_MUTED);
-    display.setTextDatum(middle_center);
-    display.drawString("C", 135, 126);
-    display.setTextColor(UI_TEXT, UI_BG);
-    display.setTextDatum(middle_left);
-    display.drawString("Voltar", 145, 126);
-
-    display.setTextDatum(middle_right);
-    display.setTextColor(UI_MUTED, UI_BG);
-    display.drawString("Segure A: Zerar", 234, 126);
-    return;
-  }
-
-  // Footer especifico para TREINO ATIVO
-  if (screen == Screen::TEAM_TRAIN_ACTIVE) {
-    display.fillRoundRect(6, 121, 14, 11, 2, UI_GREEN);
-    display.setTextColor(UI_BG, UI_GREEN);
-    display.setTextDatum(middle_center);
-    display.drawString("A", 13, 126);
-    display.setTextColor(UI_TEXT, UI_BG);
-    display.setTextDatum(middle_left);
-    display.drawString("+Passada", 23, 126);
-
-    display.fillRoundRect(80, 121, 14, 11, 2, UI_CYAN);
-    display.setTextColor(UI_BG, UI_CYAN);
-    display.setTextDatum(middle_center);
-    display.drawString("B", 87, 126);
-    display.setTextColor(UI_TEXT, UI_BG);
-    display.setTextDatum(middle_left);
-    display.drawString("Cavalo", 97, 126);
-
-    display.fillRoundRect(140, 121, 14, 11, 2, UI_ORANGE);
-    display.setTextColor(UI_BG, UI_ORANGE);
-    display.setTextDatum(middle_center);
-    display.drawString("C", 147, 126);
-    display.setTextColor(UI_TEXT, UI_BG);
-    display.setTextDatum(middle_left);
-    display.drawString("-1", 157, 126);
-
-    display.setTextDatum(middle_right);
-    display.setTextColor(UI_MUTED, UI_BG);
-    display.drawString("Segure A: Fim", 234, 126);
-    return;
-  }
-
-  // Footer para telas de confirmacao
-  if (screen == Screen::TEAM_CATTLE_RESET_CONFIRM || screen == Screen::TEAM_TRAIN_END_CONFIRM) {
-    display.fillRoundRect(8, 121, 14, 11, 2, UI_GREEN);
-    display.setTextColor(UI_BG, UI_GREEN);
-    display.setTextDatum(middle_center);
-    display.drawString("A", 15, 126);
-    display.setTextColor(UI_TEXT, UI_BG);
-    display.setTextDatum(middle_left);
-    display.drawString("Confirmar", 25, 126);
-
-    display.fillRoundRect(95, 121, 18, 11, 2, UI_MUTED);
-    display.setTextColor(UI_BG, UI_MUTED);
-    display.setTextDatum(middle_center);
-    display.drawString("B/C", 104, 126);
-    display.setTextColor(UI_TEXT, UI_BG);
-    display.setTextDatum(middle_left);
-    display.drawString("Cancelar", 118, 126);
-    return;
-  }
-
-  // Footer para resumo de treino e detalhe de historico
-  if (screen == Screen::TEAM_TRAIN_SUMMARY || screen == Screen::TEAM_TRAIN_HISTORY_DETAIL) {
-    display.fillRoundRect(8, 121, 14, 11, 2, UI_CYAN);
-    display.setTextColor(UI_BG, UI_CYAN);
-    display.setTextDatum(middle_center);
-    display.drawString("B", 15, 126);
-    display.setTextColor(UI_TEXT, UI_BG);
-    display.setTextDatum(middle_left);
-    display.drawString("Prox Cavalo", 25, 126);
-
-    display.fillRoundRect(110, 121, 14, 11, 2, UI_MUTED);
-    display.setTextColor(UI_BG, UI_MUTED);
-    display.setTextDatum(middle_center);
-    display.drawString("C", 117, 126);
-    display.setTextColor(UI_TEXT, UI_BG);
-    display.setTextDatum(middle_left);
-    display.drawString("Voltar", 127, 126);
-    return;
-  }
-
-  // Footer para configuracoes de cavalos e limite de gado
-  if (screen == Screen::TEAM_TRAIN_COUNT || screen == Screen::TEAM_TRAIN_SELECT_HORSE || screen == Screen::TEAM_CATTLE_LIMIT) {
-    display.fillRoundRect(8, 121, 14, 11, 2, UI_ORANGE);
-    display.setTextColor(UI_BG, UI_ORANGE);
-    display.setTextDatum(middle_center);
-    display.drawString("A", 15, 126);
-    display.setTextColor(UI_TEXT, UI_BG);
-    display.setTextDatum(middle_left);
-    display.drawString("Confirmar", 25, 126);
-
-    display.fillRoundRect(88, 121, 14, 11, 2, UI_CYAN);
-    display.setTextColor(UI_BG, UI_CYAN);
-    display.setTextDatum(middle_center);
-    display.drawString("B", 95, 126);
-    display.setTextColor(UI_TEXT, UI_BG);
-    display.setTextDatum(middle_left);
-    display.drawString("Mudar", 105, 126);
-
-    display.fillRoundRect(145, 121, 14, 11, 2, UI_MUTED);
-    display.setTextColor(UI_BG, UI_MUTED);
-    display.setTextDatum(middle_center);
-    display.drawString("C", 152, 126);
-    display.setTextColor(UI_TEXT, UI_BG);
-    display.setTextDatum(middle_left);
-    display.drawString("Voltar", 162, 126);
-    return;
-  }
-
-  if (screen == Screen::MOUSE) {
-    display.setTextDatum(middle_left);
-    display.setTextColor(UI_MUTED, UI_BG);
-    display.drawString("A:Esq  B:Dir  C:Sair", 8, 127);
-
-    display.setTextDatum(middle_right);
-    display.setTextColor(UI_CYAN, UI_BG);
-    display.drawString("AIR MOUSE", 232, 127);
-  } else {
-    toast = "";
-    // Pilulas modernas estilo console gamer
-    display.fillRoundRect(8, 121, 14, 11, 2, UI_ORANGE);
-    display.setTextColor(UI_BG, UI_ORANGE);
-    display.setTextDatum(middle_center);
-    display.drawString("A", 15, 126);
-    display.setTextColor(UI_TEXT, UI_BG);
-    display.setTextDatum(middle_left);
-    display.drawString("OK", 25, 126);
-
-    display.fillRoundRect(64, 121, 14, 11, 2, UI_CYAN);
-    display.setTextColor(UI_BG, UI_CYAN);
-    display.setTextDatum(middle_center);
-    display.drawString("B", 71, 126);
-    display.setTextColor(UI_TEXT, UI_BG);
-    display.setTextDatum(middle_left);
-    display.drawString("Descer", 81, 126);
-
-    display.fillRoundRect(140, 121, 14, 11, 2, UI_MUTED);
-    display.setTextColor(UI_BG, UI_MUTED);
-    display.setTextDatum(middle_center);
-    display.drawString("C", 147, 126);
-    display.setTextColor(UI_TEXT, UI_BG);
-    display.setTextDatum(middle_left);
-    display.drawString(screen == Screen::MAIN ? "Subir" : "Voltar", 157, 126);
-  }
-}
-
-void drawTitle(const String& title, const String& subtitle) {
-  auto& display = getGfx();
-  display.fillRect(0, 0, 240, 27, UI_BG);
-  display.fillRoundRect(4, 4, 3, 18, 1, UI_SELECTED);
-
-  display.setTextDatum(middle_left);
-  if (title.length() > 8) {
-    display.setTextSize(1);
-    display.setTextColor(UI_TEXT, UI_BG);
-    display.drawString(title, 12, 13);
-  } else {
-    display.setTextSize(2);
-    display.setTextColor(UI_TEXT, UI_BG);
-    display.drawString(title, 12, 13);
-  }
-
-  display.drawFastHLine(0, 26, 240, UI_BORDER);
-
-  if (isMenuScreen(screen)) {
-    drawStatusBar();
-  } else if (subtitle.length()) {
-    display.setTextDatum(middle_right);
-    display.setTextSize(1);
-    display.setTextColor(UI_YELLOW, UI_BG);
-    display.drawString(subtitle, 234, 13);
-  }
-}
-
-void drawListItem(uint8_t index, int y, const String& label, const String& detail) {
-  auto& display = getGfx();
-  const bool active = selected == index;
-  const uint16_t fill = active ? UI_PANEL_ALT : UI_PANEL;
-  const uint16_t border = active ? UI_SELECTED : UI_BORDER;
-
-  display.fillRoundRect(6, y, 228, 22, 4, fill);
-  display.drawRoundRect(6, y, 228, 22, 4, border);
-
-  if (active) {
-    display.fillRoundRect(8, y + 4, 3, 14, 1, UI_SELECTED);
-  }
-
-  const int detailWidth = detail.length() ? min<int>(72, static_cast<int>(display.textWidth(detail)) + 10) : 0;
-  const int labelX = active ? 16 : 12;
-  const int labelRight = 228 - detailWidth;
-  const int labelWidth = max(20, labelRight - labelX);
-
-  display.setTextDatum(middle_left);
-  display.setTextSize(1);
-  display.setTextColor(active ? UI_TEXT : UI_MUTED, fill);
-
-  display.setClipRect(labelX, y + 1, labelWidth, 20);
-  int textWidth = display.textWidth(label);
-  int offset = 0;
-
-  if (active && textWidth > labelWidth) {
-    const int travel = textWidth - labelWidth + 18;
-    const uint32_t cycle = 900 + travel * 35 + 900;
-    const uint32_t phase = millis() % cycle;
-    if (phase < 900) offset = 0;
-    else if (phase < cycle - 900) offset = min(travel, int((phase - 900) / 35));
-    else offset = travel;
-  }
-
-  display.drawString(label, labelX - offset, y + 11);
-  display.clearClipRect();
-
-  if (detail.length()) {
-    display.setTextDatum(middle_right);
-    display.setTextColor(active ? UI_YELLOW : UI_MUTED, fill);
-    display.drawString(detail, 226, y + 11);
-  }
-}
-
-void drawGridButton(uint8_t index, int x, int y, int w, int h,
-                    const String& label, const String& value) {
-  auto& display = getGfx();
-  const bool active = selected == index;
-  const uint16_t fill = active ? UI_PANEL_ALT : UI_PANEL;
-  const uint16_t border = active ? UI_SELECTED : UI_BORDER;
-  const uint16_t foreground = active ? UI_TEXT : UI_MUTED;
-
-  display.fillRoundRect(x, y, w, h, 4, fill);
-  display.drawRoundRect(x, y, w, h, 4, border);
-  display.setTextDatum(middle_center);
-  display.setTextSize(1);
-  display.setTextColor(foreground, fill);
-
-  if (value.length()) {
-    display.drawString(label, x + w / 2, y + 9);
-    display.setTextColor(active ? UI_YELLOW : UI_MUTED, fill);
-    display.drawString(value, x + w / 2, y + 22);
-  } else {
-    display.drawString(label, x + w / 2, y + h / 2);
-  }
-}
-
-void drawMain() {
-  auto& d = getGfx();
-  drawTitle("M5 PERSONAL");
-  const char* labels[] = {"Relogio Cyber", "Controle IR", "Wi-Fi Hub", "Air Mouse", "Agente IA", "Team Penning", "Ajustes"};
-  const char* notes[]  = {"Watchface HUD e clima", "TV e ar-condicionado", "Redes e controle web", "Apontador Bluetooth", "Comando de voz no PC", "Contagem e treinos", "Tela, relogio, repouso"};
-  const char* badges[] = {"HORA", "IR", "WIFI", "MOUSE", "IA", "BOIS", "AJUST"};
-  const uint16_t badgeColors[] = {UI_CYAN, UI_ORANGE, 0x05BF, UI_GREEN, 0x93FF, UI_YELLOW, UI_MUTED};
-
-  d.fillRect(0, 28, 240, 92, UI_BG);
-
-  const int totalItems = 7;
-  int first = selected > 1 ? (selected >= 6 ? 4 : selected - 1) : 0;
-
-  for (int row = 0; row < 3; ++row) {
-    const int item = first + row;
-    if (item >= totalItems) break;
-    const int y = 29 + row * 29;
-    const bool active = selected == item;
-    const uint16_t cardBg = active ? UI_PANEL_ALT : UI_PANEL;
-    const uint16_t border = active ? UI_SELECTED : UI_BORDER;
-
-    d.fillRoundRect(6, y, 218, 26, 4, cardBg);
-    d.drawRoundRect(6, y, 218, 26, 4, border);
-
-    if (active) {
-      d.fillRoundRect(6, y + 2, 4, 22, 2, UI_SELECTED);
-    }
-
-    // Badge de categoria estilizado (pill legível)
-    d.fillRoundRect(14, y + 4, 38, 18, 3, active ? badgeColors[item] : UI_PANEL);
-    d.drawRoundRect(14, y + 4, 38, 18, 3, badgeColors[item]);
-    d.setTextDatum(middle_center);
-    d.setTextSize(1);
-    d.setTextColor(active ? UI_BG : badgeColors[item], active ? badgeColors[item] : UI_PANEL);
-    d.drawString(badges[item], 33, y + 13);
-
-    // Titulo com alto contraste
-    d.setTextDatum(middle_left);
-    d.setTextSize(1);
-    d.setTextColor(active ? 0xFFFF : 0xD6BA, cardBg);
-    d.drawString(labels[item], 57, y + 8);
-
-    // Subtitulo / Nota
-    d.setTextColor(active ? UI_CYAN : 0x8CD1, cardBg);
-    d.drawString(notes[item], 57, y + 19);
-
-    // Indicador direito
-    if (active) {
-      d.setTextDatum(middle_right);
-      d.setTextColor(UI_SELECTED, cardBg);
-      d.drawString(">", 216, y + 13);
-    }
-  }
-
-  // Barra de rolagem lateral moderna
-  d.drawFastVLine(232, 31, 84, UI_BORDER);
-  int thumbY = 31 + (selected * 70) / (totalItems - 1);
-  d.fillRoundRect(230, thumbY, 5, 14, 2, UI_SELECTED);
-}
-
-void drawWifiMenu() {
-  drawTitle("WIFI", WiFi.status() == WL_CONNECTED ? WiFi.SSID() : "DESCONECTADO");
-
-  const String labels[] = {"CONECTAR", "CONECTAR WEB UI", "WEB UI REDE", "REDES SALVAS"};
-  const String details[] = {
-    "REDES",
-    "AP",
-    webUiMode == WebUiMode::LAN ? "ATIVA" : "OFF",
-    String(savedNetworkCount)
-  };
-
-  const uint8_t visible = 3;
-  uint8_t first = selected >= visible ? selected - visible + 1 : 0;
-
-  for (uint8_t row = 0; row < visible; row++) {
-    uint8_t item = first + row;
-    if (item >= 4) break;
-    drawListItem(item, 40 + row * 26, labels[item], details[item]);
-  }
-}
-
-
-void drawWifiScanning() {
-  auto& display = getGfx();
-  drawTitle("WIFI", "ESCANEANDO...");
-  display.fillRect(20, 55, 200, 30, UI_BG);
-  display.setTextDatum(middle_center);
-  display.setTextSize(2);
-  display.setTextColor(UI_SELECTED, UI_BG);
-  String dots;
-  for (uint8_t i = 0; i < (millis() / 300) % 4; i++) dots += ".";
-  display.drawString("PROCURANDO" + dots, 120, 70);
-}
-
-void drawWifiNetworks() {
-  auto& display = getGfx();
-  drawTitle("REDES DISPONIVEIS", String(scannedNetworkCount));
-  if (!scannedNetworkCount) {
-    display.setTextDatum(middle_center);
-    display.setTextColor(UI_RED, UI_BG);
-    display.drawString("NENHUMA REDE", 120, 70);
-    return;
-  }
-
-  uint8_t start = selected > 2 ? selected - 2 : 0;
-  uint8_t row = 0;
-  for (uint8_t i = start; i < scannedNetworkCount && row < 3; i++, row++) {
-    String detail = String(scannedRssi[i]) + "dB";
-    if (scannedSavedIndex[i] != 255) detail = "SALVA " + detail;
-    drawListItem(i, 43 + row * 27, scannedSsids[i], detail);
-  }
-}
-
-void drawWifiConnecting() {
-  auto& display = getGfx();
-  drawTitle("CONECTANDO", wifiPendingSsid);
-  display.fillRect(20, 50, 200, 60, UI_BG);
-  const char frames[] = {'|', '/', '-', '\\'};
-  char frame[2] = {frames[(millis() / 180) % 4], '\0'};
-  display.setTextDatum(middle_center);
-  display.setTextSize(3);
-  display.setTextColor(UI_SELECTED, UI_BG);
-  display.drawString(frame, 120, 70);
-  display.setTextSize(1);
-  display.setTextColor(UI_MUTED, UI_BG);
-  display.drawString(String((millis() - wifiConnectStartedAt) / 1000) + "s", 120, 96);
-}
-
-void drawWifiResult() {
-  auto& display = getGfx();
-  drawTitle(wifiResultTitle, wifiResultDetail);
-  display.setTextDatum(middle_center);
-  display.setTextSize(2);
-  display.setTextColor(wifiResultTitle == "CONECTADO" ? UI_GREEN : UI_RED, UI_BG);
-  display.drawString(wifiResultTitle == "CONECTADO" ? "OK" : "ERRO", 120, 65);
-  if (WiFi.status() == WL_CONNECTED) {
-    display.setTextSize(1);
-    display.setTextColor(UI_TEXT, UI_BG);
-    display.drawString(WiFi.localIP().toString(), 120, 92);
-  }
-}
-
-void drawWifiApInfo() {
-  auto& display = getGfx();
-  drawTitle("CONECTAR WEB UI", "AP ATIVO");
-  display.setTextDatum(middle_center);
-  display.setTextSize(1);
-  display.setTextColor(UI_TEXT, UI_BG);
-  display.drawString("REDE: " + String(WIFI_SETUP_SSID), 120, 49);
-  display.drawString("SENHA: " + String(WIFI_SETUP_PASSWORD), 120, 66);
-  display.setTextColor(UI_SELECTED, UI_BG);
-  display.drawString("192.168.4.1", 120, 86);
-  display.setTextColor(UI_MUTED, UI_BG);
-  display.drawString("B LONGO PARA SAIR", 120, 106);
-}
-
-void drawWifiWebUiNetwork() {
-  auto& display = getGfx();
-  drawTitle("WEB UI REDE", WiFi.status() == WL_CONNECTED ? WiFi.SSID() : "SEM WIFI");
-  display.setTextDatum(middle_center);
-  display.setTextSize(2);
-  display.setTextColor(webUiMode == WebUiMode::LAN ? UI_GREEN : UI_RED, UI_BG);
-  display.drawString(webUiMode == WebUiMode::LAN ? "ATIVA" : "DESATIVADA", 120, 62);
-  display.setTextSize(1);
-  display.setTextColor(UI_TEXT, UI_BG);
-  if (WiFi.status() == WL_CONNECTED) {
-    display.drawString(WiFi.localIP().toString(), 120, 90);
-  } else {
-    display.drawString("CONECTE AO WIFI", 120, 90);
-  }
-}
-
-
-void drawWifiSavedList() {
-  auto& display = getGfx();
-  drawTitle("REDES SALVAS", String(savedNetworkCount) + "/10");
-  if (!savedNetworkCount) {
-    display.setTextDatum(middle_center);
-    display.setTextColor(UI_MUTED, UI_BG);
-    display.drawString("NENHUMA REDE", 120, 68);
-    return;
-  }
-
-  uint8_t start = selected > 2 ? selected - 2 : 0;
-  uint8_t row = 0;
-  for (uint8_t i = start; i < savedNetworkCount && row < 3; i++, row++) {
-    String detail;
-    if (WiFi.status() == WL_CONNECTED && WiFi.SSID() == savedNetworks[i].ssid) detail = "ATUAL";
-    else if (savedNetworks[i].health == SavedNetworkHealth::WARNING) detail = "!";
-    else if (savedNetworks[i].health == SavedNetworkHealth::VERIFIED) detail = "OK";
-    drawListItem(i, 40 + row * 26, savedNetworks[i].ssid, detail);
-  }
-}
-
-
-void drawWifiSavedDetail() {
-  if (wifiSelectedSavedIndex < 0 || wifiSelectedSavedIndex >= savedNetworkCount) {
-    screen = Screen::WIFI_SAVED_LIST;
-    selected = 0;
-    return;
-  }
-
-  drawTitle(savedNetworks[wifiSelectedSavedIndex].ssid, "REDE SALVA");
-  const char* labels[] = {"CONECTAR", "EDITAR SSID", "EDITAR SENHA", "EXCLUIR"};
-  const uint8_t first = selected >= 3 ? selected - 2 : 0;
-  for (uint8_t row = 0; row < 3 && first + row < 4; ++row) {
-    const uint8_t item = first + row;
-    drawListItem(item, 43 + row * 27, labels[item], item == 3 ? "!" : "");
-  }
-}
-
-void drawWifiDeleteConfirm() {
-  drawTitle("EXCLUIR REDE?", savedNetworks[wifiSelectedSavedIndex].ssid);
-  drawListItem(0, 55, "NAO");
-  drawListItem(1, 84, "SIM, EXCLUIR", "!");
-}
-
-
-void drawIrTypes() {
-  drawTitle("INFRAVERMELHO");
-  drawListItem(0, 46, "TVs", String(TV_COUNT));
-  drawListItem(1, 73, "AR-CONDICIONADO", String(AC_COUNT));
-}
-
-void drawTvList() {
-  drawTitle("TVs");
-  for (uint8_t i = 0; i < TV_COUNT; i++) {
-    drawListItem(i, 42 + i * 26, televisions[i].name);
-  }
-}
-
-void drawAcList() {
-  drawTitle("AR-CONDICIONADO");
-  for (uint8_t i = 0; i < AC_COUNT; i++) {
-    drawListItem(i, 46 + i * 28, airConditioners[i].name);
-  }
-}
-
-void drawTvRemote(bool navigationPage) {
-  const TvDevice& tv = televisions[activeTv];
-  drawTitle(tv.name, navigationPage ? "NAVEGACAO" : "CONTROLE");
-
-  constexpr int x0 = 4;
-  constexpr int y0 = 43;
-  constexpr int gap = 3;
-  constexpr int width = 56;
-  constexpr int height = 36;
-
-  if (!navigationPage) {
-    drawGridButton(0, x0 + 0 * (width + gap), y0, width, height, "POWER");
-    drawGridButton(1, x0 + 1 * (width + gap), y0, width, height, "MUDO");
-    drawGridButton(2, x0 + 2 * (width + gap), y0, width, height, "VOL", "+");
-    drawGridButton(3, x0 + 3 * (width + gap), y0, width, height, "VOL", "-");
-    drawGridButton(4, x0 + 0 * (width + gap), y0 + height + gap, width, height, "CAN", "+");
-    drawGridButton(5, x0 + 1 * (width + gap), y0 + height + gap, width, height, "CAN", "-");
-    drawGridButton(6, x0 + 2 * (width + gap), y0 + height + gap, width, height, "INPUT");
-    drawGridButton(7, x0 + 3 * (width + gap), y0 + height + gap, width, height, "NAV");
-  } else {
-    drawGridButton(0, x0 + 0 * (width + gap), y0, width, height, "CIMA");
-    drawGridButton(1, x0 + 1 * (width + gap), y0, width, height, "BAIXO");
-    drawGridButton(2, x0 + 2 * (width + gap), y0, width, height, "ESQ");
-    drawGridButton(3, x0 + 3 * (width + gap), y0, width, height, "DIR");
-    drawGridButton(4, x0 + 0 * (width + gap), y0 + height + gap, width, height, "OK");
-    drawGridButton(5, x0 + 1 * (width + gap), y0 + height + gap, width, height, "VOLTAR");
-    drawGridButton(6, x0 + 2 * (width + gap), y0 + height + gap, width, height, "HOME");
-    drawGridButton(7, x0 + 3 * (width + gap), y0 + height + gap, width, height, "MENU");
-  }
-}
-
-void drawAcRemote() {
-  const AcDevice& device = airConditioners[activeAc];
-  const AcState& state = device.state;
-  auto& display = getGfx();
-
-  display.fillRoundRect(4, 3, 232, 52, 7, UI_PANEL);
-  display.drawRoundRect(4, 3, 232, 52, 7, UI_BORDER);
-  display.setTextDatum(top_left);
-  display.setTextSize(1);
-  display.setTextColor(UI_MUTED, UI_PANEL);
-  display.drawString(device.name, 11, 8);
-
-  display.setTextDatum(middle_left);
-  display.setTextSize(3);
-  display.setTextColor(UI_TEXT, UI_PANEL);
-  display.drawString(String(state.temp) + "C", 12, 34);
-
-  display.setTextDatum(middle_center);
-  display.setTextSize(1);
-  display.setTextColor(UI_YELLOW, UI_PANEL);
-  display.drawString(acModeName(state.mode), 122, 31);
-  display.setTextColor(UI_MUTED, UI_PANEL);
-  display.drawString("FAN " + String(acFanName(state.fan)), 122, 44);
-
-  display.setTextDatum(middle_right);
-  display.setTextColor(state.power ? UI_GREEN : UI_RED, UI_PANEL);
-  display.drawString(state.power ? "ON" : "OFF", 226, 20);
-  display.setTextColor(UI_MUTED, UI_PANEL);
-  display.drawString(state.swing ? "SWING" : "-", 226, 35);
-  display.drawString(state.turbo ? "TURBO" : sleepName(device), 226, 47);
-
-  constexpr int startX = 4;
-  constexpr int startY = 59;
-  constexpr int gap = 3;
-  constexpr int buttonW = 56;
-  constexpr int buttonH = 28;
-
-  drawGridButton(0, startX + 0 * (buttonW + gap), startY, buttonW, buttonH, "TEMP", "-");
-  drawGridButton(1, startX + 1 * (buttonW + gap), startY, buttonW, buttonH, "TEMP", "+");
-  drawGridButton(2, startX + 2 * (buttonW + gap), startY, buttonW, buttonH, "MODO", acModeName(state.mode));
-  drawGridButton(3, startX + 3 * (buttonW + gap), startY, buttonW, buttonH, "FAN", acFanName(state.fan));
-  drawGridButton(4, startX + 0 * (buttonW + gap), startY + buttonH + gap, buttonW, buttonH, "SWING", state.swing ? "ON" : "OFF");
-  drawGridButton(5, startX + 1 * (buttonW + gap), startY + buttonH + gap, buttonW, buttonH, "TURBO", state.turbo ? "ON" : "OFF");
-  drawGridButton(6, startX + 2 * (buttonW + gap), startY + buttonH + gap, buttonW, buttonH, "SLEEP", sleepName(device));
-  drawGridButton(7, startX + 3 * (buttonW + gap), startY + buttonH + gap, buttonW, buttonH, "POWER", state.power ? "OFF" : "ON");
-}
-
-
-void drawTeamMenu() {
-  drawTitle("TEAM PENNING");
-  drawListItem(0, 36, "BOIS SORTEADOS", "Controle de gado");
-  drawListItem(1, 62, trainingSession.active ? "TREINO ATIVO" : "NOVO TREINO", trainingSession.active ? "Em andamento" : "Iniciar sessao");
-  drawListItem(2, 88, "TREINOS SALVOS", "Historico");
-}
-
-void drawCattleLimit() {
-  drawTitle("CONFIGURAR GADO", "LIMITE");
-  auto& display = getGfx();
-  display.fillRoundRect(10, 32, 220, 84, 6, UI_PANEL);
-  display.drawRoundRect(10, 32, 220, 84, 6, UI_SELECTED);
-
-  display.setTextDatum(top_center);
-  display.setTextSize(1);
-  display.setTextColor(UI_MUTED, UI_PANEL);
-  display.drawString("QUANTIDADE DE ANIMAIS NA ARENA:", 120, 42);
-
-  display.setTextDatum(middle_center);
-  display.setTextSize(4);
-  display.setTextColor(UI_YELLOW, UI_PANEL);
-  display.drawString("0 ATE " + String(cattleMaxNumber), 120, 72);
-
-  display.setTextDatum(bottom_center);
-  display.setTextSize(1);
-  display.setTextColor(UI_TEXT, UI_PANEL);
-  display.drawString("(" + String(cattleMaxNumber + 1) + " bois no total)", 120, 108);
-}
-
-void drawCattleCounter() {
-  auto& display = getGfx();
-  const uint8_t remaining = cattleRemainingCount();
-  String subTitle = "FALTAM: " + String(remaining) + "/" + String(cattleMaxNumber + 1);
-  if (remaining == 1) subTitle = "ULTIMO BOI!";
-  else if (remaining == 0) subTitle = "BOIADA ZERADA";
-  drawTitle("BOIS SORTEADOS", subTitle);
-
-  // Painel Esquerdo: Boi da Vez / Acao
-  display.fillRoundRect(6, 30, 98, 86, 6, UI_PANEL);
-  uint16_t cardBorder = (remaining <= 1) ? UI_GREEN : UI_SELECTED;
-  display.drawRoundRect(6, 30, 98, 86, 6, cardBorder);
-
-  display.setTextDatum(top_center);
-  display.setTextSize(1);
-  if (remaining == 0) {
-    display.setTextColor(UI_RED, UI_PANEL);
-    display.drawString("BOIADA FIM", 55, 36);
-
-    display.setTextDatum(middle_center);
-    display.setTextSize(3);
-    display.setTextColor(UI_YELLOW, UI_PANEL);
-    display.drawString("ZERADA", 55, 68);
-
-    display.fillRoundRect(12, 94, 86, 16, 3, UI_GREEN);
-    display.setTextColor(UI_BG, UI_GREEN);
-    display.setTextDatum(middle_center);
-    display.setTextSize(1);
-    display.drawString("[A] REINICIAR", 55, 102);
-  } else if (remaining == 1) {
-    display.setTextColor(UI_GREEN, UI_PANEL);
-    display.drawString("ULTIMO BOI!", 55, 36);
-
-    display.setTextDatum(middle_center);
-    display.setTextSize(5);
-    display.setTextColor(UI_GREEN, UI_PANEL);
-    display.drawString(String(cattleSelectedNumber), 55, 68);
-
-    display.fillRoundRect(12, 94, 86, 16, 3, UI_GREEN);
-    display.setTextColor(UI_BG, UI_GREEN);
-    display.setTextDatum(middle_center);
-    display.setTextSize(1);
-    display.drawString("[A] REINICIAR", 55, 102);
-  } else {
-    display.setTextColor(UI_MUTED, UI_PANEL);
-    display.drawString("BOI SORTEADO", 55, 36);
-
-    display.setTextDatum(middle_center);
-    display.setTextSize(5);
-    display.setTextColor(UI_YELLOW, UI_PANEL);
-    display.drawString(String(cattleSelectedNumber), 55, 68);
-
-    display.fillRoundRect(12, 94, 86, 16, 3, UI_SELECTED);
-    display.setTextColor(UI_BG, UI_SELECTED);
-    display.setTextDatum(middle_center);
-    display.setTextSize(1);
-    display.drawString("[A] MARCAR", 55, 102);
-  }
-
-  // Painel Direito: Grid Visual da Boiada (Bois 0 a 9)
-  display.fillRoundRect(110, 30, 124, 86, 6, UI_PANEL);
-  display.drawRoundRect(110, 30, 124, 86, 6, UI_BORDER);
-
-  display.setTextDatum(top_center);
-  display.setTextSize(1);
-  display.setTextColor(UI_MUTED, UI_PANEL);
-  display.drawString("ARENA GADO", 172, 36);
-
-  // Grade 2x5 dos animais
-  for (uint8_t i = 0; i <= min<uint8_t>(9, cattleMaxNumber); i++) {
-    int col = i % 5;
-    int row = i / 5;
-    int cx = 114 + col * 23;
-    int cy = 48 + row * 31;
-    int cw = 21;
-    int ch = 26;
-
-    if (isCattleDrawn(i)) {
-      // Boi ja sorteado / correu (strikethrough dim)
-      display.fillRoundRect(cx, cy, cw, ch, 3, UI_BG);
-      display.drawRoundRect(cx, cy, cw, ch, 3, UI_BORDER);
-      display.setTextDatum(middle_center);
-      display.setTextSize(2);
-      display.setTextColor(0x52AA, UI_BG); // cinza escuro
-      display.drawString(String(i), cx + cw / 2, cy + ch / 2);
-      display.drawFastHLine(cx + 2, cy + ch / 2, cw - 4, UI_RED);
-    } else if (i == cattleSelectedNumber) {
-      // Boi atualmente selecionado (destaque amarelo neon)
-      display.fillRoundRect(cx, cy, cw, ch, 3, UI_YELLOW);
-      display.setTextDatum(middle_center);
-      display.setTextSize(2);
-      display.setTextColor(UI_BG, UI_YELLOW);
-      display.drawString(String(i), cx + cw / 2, cy + ch / 2);
-    } else {
-      // Boi ainda disponivel na arena
-      display.fillRoundRect(cx, cy, cw, ch, 3, UI_PANEL_ALT);
-      display.drawRoundRect(cx, cy, cw, ch, 3, UI_BORDER);
-      display.setTextDatum(middle_center);
-      display.setTextSize(2);
-      display.setTextColor(UI_TEXT, UI_PANEL_ALT);
-      display.drawString(String(i), cx + cw / 2, cy + ch / 2);
-    }
-  }
-}
-
-void drawCattleResetConfirm() {
-  drawTitle("TEAM PENNING", "CONFIRMACAO");
-  auto& display = getGfx();
-  display.fillRoundRect(12, 32, 216, 84, 6, UI_PANEL);
-  display.drawRoundRect(12, 32, 216, 84, 6, UI_RED);
-
-  display.setTextDatum(middle_center);
-  display.setTextSize(2);
-  display.setTextColor(UI_RED, UI_PANEL);
-  display.drawString("ZERAR A BOIADA?", 120, 56);
-
-  display.setTextSize(1);
-  display.setTextColor(UI_TEXT, UI_PANEL);
-  display.drawString("Todos os bois voltam a ficar disponiveis.", 120, 80);
-
-  display.setTextColor(UI_GREEN, UI_PANEL);
-  display.drawString("[ A ] SIM, ZERAR     [ B / C ] CANCELAR", 120, 102);
-}
-
-void drawTrainingCount() {
-  drawTitle("NOVO TREINO", "CONFIGURACAO");
-  auto& display = getGfx();
-  display.fillRoundRect(12, 32, 216, 84, 6, UI_PANEL);
-  display.drawRoundRect(12, 32, 216, 84, 6, UI_SELECTED);
-
-  display.setTextDatum(top_center);
-  display.setTextSize(1);
-  display.setTextColor(UI_MUTED, UI_PANEL);
-  display.drawString("QUANTOS CAVALOS IRAO TREINAR?", 120, 42);
-
-  display.setTextDatum(middle_center);
-  display.setTextSize(5);
-  display.setTextColor(UI_YELLOW, UI_PANEL);
-  display.drawString(String(trainingSetupCount), 120, 72);
-
-  display.setTextDatum(bottom_center);
-  display.setTextSize(1);
-  display.setTextColor(UI_CYAN, UI_PANEL);
-  display.drawString("Clique [ B ] para alternar (1 a 5)", 120, 108);
-}
-
-void drawTrainingSelectHorse() {
-  drawTitle("ESCOLHA O CAVALO", String(trainingSetupSlot + 1) + " DE " + String(trainingSetupCount));
-  auto& display = getGfx();
-  display.fillRoundRect(12, 32, 216, 84, 6, UI_PANEL);
-  display.drawRoundRect(12, 32, 216, 84, 6, UI_SELECTED);
-
-  display.setTextDatum(top_center);
-  display.setTextSize(1);
-  display.setTextColor(UI_MUTED, UI_PANEL);
-  display.drawString("ANIMAL PARA A POSICAO " + String(trainingSetupSlot + 1) + ":", 120, 42);
-
-  display.fillRoundRect(24, 56, 192, 32, 4, UI_PANEL_ALT);
-  display.drawRoundRect(24, 56, 192, 32, 4, UI_YELLOW);
-  display.setTextDatum(middle_center);
-  display.setTextSize(2);
-  display.setTextColor(UI_YELLOW, UI_PANEL_ALT);
-  display.drawString(TRAIN_HORSE_NAMES[trainingSetupCandidate], 120, 72);
-
-  display.setTextDatum(bottom_center);
-  display.setTextSize(1);
-  display.setTextColor(UI_CYAN, UI_PANEL);
-  display.drawString("◄ [ B ] Proximo Animal   |   [ A ] Confirmar", 120, 108);
-}
-
-void drawTrainingActive() {
-  uint8_t i = trainingSession.currentHorse;
-  drawTitle("TREINO ATIVO", String(i + 1) + "/" + String(trainingSession.horseCount));
-  auto& display = getGfx();
-
-  // Painel Esquerdo: Cavalo Atual
-  display.fillRoundRect(6, 30, 110, 86, 6, UI_PANEL);
-  display.drawRoundRect(6, 30, 110, 86, 6, UI_SELECTED);
-
-  display.setTextDatum(top_center);
-  display.setTextSize(1);
-  display.setTextColor(UI_MUTED, UI_PANEL);
-  display.drawString("CAVALO ATUAL", 61, 36);
-
-  display.setTextDatum(middle_center);
-  display.setTextSize(2);
-  display.setTextColor(UI_CYAN, UI_PANEL);
-  display.drawString(TRAIN_HORSE_NAMES[trainingSession.horseIds[i]], 61, 64);
-
-  display.setTextDatum(bottom_center);
-  display.setTextSize(1);
-  display.setTextColor(UI_MUTED, UI_PANEL);
-  display.drawString("◄ [ B ] Proximo ►", 61, 108);
-
-  // Painel Direito: Passadas
-  display.fillRoundRect(122, 30, 112, 86, 6, UI_PANEL);
-  display.drawRoundRect(122, 30, 112, 86, 6, UI_YELLOW);
-
-  display.setTextDatum(top_center);
-  display.setTextSize(1);
-  display.setTextColor(UI_MUTED, UI_PANEL);
-  display.drawString("PASSADAS", 178, 36);
-
-  display.setTextDatum(middle_center);
-  display.setTextSize(5);
-  display.setTextColor(UI_YELLOW, UI_PANEL);
-  display.drawString(String(trainingSession.passes[i]), 178, 68);
-
-  display.setTextDatum(bottom_center);
-  display.setTextSize(1);
-  display.setTextColor(UI_GREEN, UI_PANEL);
-  display.drawString("[ A ] +1   [ C ] -1", 178, 108);
-}
-
-void drawTrainingEndConfirm() {
-  drawTitle("TREINO", "FINALIZAR");
-  auto& display = getGfx();
-  display.fillRoundRect(12, 32, 216, 84, 6, UI_PANEL);
-  display.drawRoundRect(12, 32, 216, 84, 6, UI_YELLOW);
-
-  display.setTextDatum(middle_center);
-  display.setTextSize(2);
-  display.setTextColor(UI_YELLOW, UI_PANEL);
-  display.drawString("ENCERRAR TREINO?", 120, 56);
-
-  display.setTextSize(1);
-  display.setTextColor(UI_TEXT, UI_PANEL);
-  display.drawString("Os dados serao salvos no historico com a data.", 120, 80);
-
-  display.setTextColor(UI_GREEN, UI_PANEL);
-  display.drawString("[ A ] SALVAR E FECHAR     [ B / C ] VOLTAR", 120, 102);
-}
-
-void drawTrainingSummary() {
-  const TrainingRecord& r = trainingHistory[0];
-  if (!r.valid || !r.horseCount) { drawTitle("TREINO SALVO", "SEM DADOS"); return; }
-  uint8_t i = min<uint8_t>(trainingSummaryHorse, r.horseCount - 1);
-  drawTitle("TREINO CONCLUIDO", String(r.date));
-  auto& display = getGfx();
-
-  display.fillRoundRect(6, 30, 110, 86, 6, UI_PANEL);
-  display.drawRoundRect(6, 30, 110, 86, 6, UI_SELECTED);
-  display.setTextDatum(top_center);
-  display.setTextSize(1);
-  display.setTextColor(UI_MUTED, UI_PANEL);
-  display.drawString("ANIMAL", 61, 36);
-  display.setTextDatum(middle_center);
-  display.setTextSize(2);
-  display.setTextColor(UI_CYAN, UI_PANEL);
-  display.drawString(TRAIN_HORSE_NAMES[r.horseIds[i]], 61, 64);
-  display.setTextDatum(bottom_center);
-  display.setTextSize(1);
-  display.setTextColor(UI_MUTED, UI_PANEL);
-  display.drawString("◄ [ B ] " + String(i + 1) + "/" + String(r.horseCount) + " ►", 61, 108);
-
-  display.fillRoundRect(122, 30, 112, 86, 6, UI_PANEL);
-  display.drawRoundRect(122, 30, 112, 86, 6, UI_GREEN);
-  display.setTextDatum(top_center);
-  display.setTextSize(1);
-  display.setTextColor(UI_MUTED, UI_PANEL);
-  display.drawString("TOTAL PASSADAS", 178, 36);
-  display.setTextDatum(middle_center);
-  display.setTextSize(5);
-  display.setTextColor(UI_GREEN, UI_PANEL);
-  display.drawString(String(r.passes[i]), 178, 68);
-  display.setTextDatum(bottom_center);
-  display.setTextSize(1);
-  display.setTextColor(UI_TEXT, UI_PANEL);
-  display.drawString("Salvo com sucesso!", 178, 108);
-}
-
-void drawTrainingHistory() {
-  drawTitle("TREINOS SALVOS");
-  for (uint8_t i = 0; i < MAX_TRAIN_HISTORY; i++) {
-    String label = trainingHistory[i].valid ? "TREINO " + String(i + 1) : "SLOT VAZIO";
-    String detail = trainingHistory[i].valid ? (String(trainingHistory[i].date) + " (" + String(trainingHistory[i].horseCount) + " cav)") : "Sem dados";
-    drawListItem(i, 40 + i * 32, label, detail);
-  }
-}
-
-void drawTrainingHistoryDetail() {
-  const TrainingRecord& r = trainingHistory[trainingHistoryRecord];
-  if (!r.valid || !r.horseCount) { drawTitle("SEM REGISTRO"); return; }
-  uint8_t i = min<uint8_t>(trainingHistoryHorse, r.horseCount - 1);
-  drawTitle("TREINO " + String(trainingHistoryRecord + 1), String(r.date));
-  auto& display = getGfx();
-
-  display.fillRoundRect(6, 30, 110, 86, 6, UI_PANEL);
-  display.drawRoundRect(6, 30, 110, 86, 6, UI_SELECTED);
-  display.setTextDatum(top_center);
-  display.setTextSize(1);
-  display.setTextColor(UI_MUTED, UI_PANEL);
-  display.drawString("ANIMAL", 61, 36);
-  display.setTextDatum(middle_center);
-  display.setTextSize(2);
-  display.setTextColor(UI_CYAN, UI_PANEL);
-  display.drawString(TRAIN_HORSE_NAMES[r.horseIds[i]], 61, 64);
-  display.setTextDatum(bottom_center);
-  display.setTextSize(1);
-  display.setTextColor(UI_MUTED, UI_PANEL);
-  display.drawString("◄ [ B ] " + String(i + 1) + "/" + String(r.horseCount) + " ►", 61, 108);
-
-  display.fillRoundRect(122, 30, 112, 86, 6, UI_PANEL);
-  display.drawRoundRect(122, 30, 112, 86, 6, UI_GREEN);
-  display.setTextDatum(top_center);
-  display.setTextSize(1);
-  display.setTextColor(UI_MUTED, UI_PANEL);
-  display.drawString("PASSADAS", 178, 36);
-  display.setTextDatum(middle_center);
-  display.setTextSize(5);
-  display.setTextColor(UI_GREEN, UI_PANEL);
-  display.drawString(String(r.passes[i]), 178, 68);
-  display.setTextDatum(bottom_center);
-  display.setTextSize(1);
-  display.setTextColor(UI_TEXT, UI_PANEL);
-  display.drawString("Sessao gravada", 178, 108);
-}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 void startBleMouse() {
   if (!bleMouseStarted) {
@@ -4535,77 +3151,8 @@ void startBleMouse() {
   }
 }
 
-void updateMouseSearchingDots() {
-  auto& d = M5.Display;
-  d.fillRoundRect(6, 38, 116, 18, 3, UI_PANEL);
-  d.setTextSize(1);
-  d.setTextDatum(middle_center);
-  d.setTextColor(UI_SELECTED, UI_PANEL);
-  const char* state = !M5.Imu.isEnabled() ? "ERRO NO SENSOR" :
-    !isMouseConnected() ? (bleMouse.isConnected() ? "CONECTANDO" : "PAREAR BLUETOOTH") :
-    !mouseCalibrated ? "MANTENHA PARADO" : "PRONTO";
-  d.drawString(state, 64, 47);
-}
 
-void updateMouseCrosshair(float vx, float vy, uint16_t ballColor) {
-  auto& d = M5.Display;
-  d.startWrite();
-  d.fillCircle(mouseDotX, mouseDotY, 5, UI_BG);
-  d.drawCircle(181, 68, 32, UI_BORDER);
-  d.drawFastHLine(149, 68, 64, UI_BORDER);
-  d.drawFastVLine(181, 36, 64, UI_BORDER);
-  mouseDotX = constrain(181 + (int)(vx * 0.5f), 152, 210);
-  mouseDotY = constrain(68 + (int)(vy * 0.5f), 39, 97);
-  d.fillCircle(mouseDotX, mouseDotY, 4, ballColor);
-  d.endWrite();
-}
 
-void drawMouseScreen() {
-  auto& d = getGfx();
-  d.fillScreen(UI_BG);
-
-  // Painel Esquerdo: Identificação, Estado e Atalhos
-  d.setTextSize(1);
-  d.setTextDatum(middle_left);
-  d.setTextColor(UI_MUTED, UI_BG);
-  d.drawString("M5 / CONTROLE", 8, 12);
-  d.setTextSize(2);
-  d.setTextColor(UI_TEXT, UI_BG);
-  d.drawString("Air Mouse", 8, 26);
-
-  d.fillRoundRect(6, 38, 116, 18, 3, UI_PANEL);
-  d.setTextSize(1);
-  d.setTextDatum(middle_center);
-  d.setTextColor(UI_SELECTED, UI_PANEL);
-  const char* state = !M5.Imu.isEnabled() ? "ERRO NO SENSOR" :
-    !isMouseConnected() ? (bleMouse.isConnected() ? "CONECTANDO" : "PAREAR BLUETOOTH") :
-    !mouseCalibrated ? "MANTENHA PARADO" : "PRONTO";
-  d.drawString(state, 64, 47);
-
-  d.setTextDatum(middle_left);
-  d.setTextColor(UI_TEXT, UI_BG);
-  d.drawString("A: Esq | B: Dir", 8, 66);
-  d.setTextColor(UI_MUTED, UI_BG);
-  d.drawString("Segure A: Arraste", 8, 80);
-  d.drawString("C: Sair | Seg C: Calib", 8, 94);
-
-  d.drawRoundRect(8, 108, 112, 7, 2, UI_BORDER);
-  if (mouseCalibrated) {
-    d.fillRect(10, 110, 108, 3, UI_GREEN);
-  }
-
-  // Painel Direito: Retículo da Mira Giroscópica
-  d.drawRoundRect(128, 6, 106, 122, 4, UI_PANEL);
-  d.setTextDatum(top_center);
-  d.setTextColor(UI_MUTED, UI_BG);
-  d.drawString("MIRA GYRO", 181, 12);
-  d.drawCircle(181, 68, 32, UI_BORDER);
-  d.drawFastHLine(149, 68, 64, UI_BORDER);
-  d.drawFastVLine(181, 36, 64, UI_BORDER);
-  mouseDotX = 181;
-  mouseDotY = 68;
-  d.fillCircle(mouseDotX, mouseDotY, 4, UI_SELECTED);
-}
 
 void playWandChime() {
   if (M5.Speaker.isEnabled()) {
@@ -4833,6 +3380,36 @@ void startVoiceRecording() {
   redraw = true;
 }
 
+// Desliga o microfone e devolve o alto-falante (I2S compartilhado).
+void stopVoiceMic() {
+  if (voiceMicRecordingActive) {
+    voiceMicRecordingActive = false;
+    M5.Mic.end();
+    M5.Speaker.begin();
+  }
+}
+
+// Descarta o trecho gravado sem enviar e volta para IDLE.
+void cancelVoiceRecording() {
+  stopVoiceMic();
+  voxSpeechDetected = false;
+  voxSilenceStart = 0;
+  voiceRecordedSamples = 0;
+  voiceState = VoiceState::IDLE;
+  if (M5.Speaker.isEnabled()) M5.Speaker.tone(600, 60);
+  Serial.println("[VOICE] Gravacao cancelada pelo usuario.");
+  redraw = true;
+}
+
+// Sai da tela do agente: mic desligado, estado limpo, volta ao menu.
+void exitVoiceScreen() {
+  stopVoiceMic();
+  voxSpeechDetected = false;
+  voiceScrollLine = 0;
+  voiceState = VoiceState::IDLE;
+  goBack();
+}
+
 void stopVoiceRecordingAndSend() {
   voiceMicRecordingActive = false;
   M5.Mic.end();
@@ -4904,353 +3481,46 @@ void processVoiceTransport() {
   }
 }
 
-int countWrappedTextLines(int maxW, const String& text) {
-  auto& d = M5.Display;
-  d.setTextSize(1);
-  int curX = 0;
-  int lines = 1;
-  String word = "";
-  for (size_t i = 0; i <= text.length(); ++i) {
-    char c = (i < text.length()) ? text[i] : ' ';
-    if (c == ' ' || c == '\n' || i == text.length()) {
-      if (word.length() > 0) {
-        int wWidth = d.textWidth(word);
-        if (curX + wWidth > maxW && curX > 0) {
-          curX = 0;
-          lines++;
-        }
-        curX += wWidth + d.textWidth(" ");
-        word = "";
-      }
-      if (c == '\n') {
-        curX = 0;
-        lines++;
-      }
-    } else {
-      word += c;
-    }
-  }
-  return lines;
-}
 
-void drawWrappedTextCanvas(M5Canvas& c, int x, int y, int maxW, int maxLines, int startLine, const String& text, uint16_t color) {
-  c.setTextSize(1);
-  c.setTextColor(color, UI_PANEL);
-  c.setTextDatum(top_left);
 
-  int curX = x;
-  int lineIdx = 0;
-  String word = "";
-
-  for (size_t i = 0; i <= text.length(); ++i) {
-    char ch = (i < text.length()) ? text[i] : ' ';
-    if (ch == ' ' || ch == '\n' || i == text.length()) {
-      if (word.length() > 0) {
-        int wWidth = c.textWidth(word);
-        if (curX + wWidth > x + maxW && curX > x) {
-          curX = x;
-          lineIdx++;
-        }
-        if (lineIdx >= startLine && (lineIdx - startLine) < maxLines) {
-          int drawY = y + (lineIdx - startLine) * 12;
-          c.drawString(word, curX, drawY);
-        }
-        curX += wWidth + c.textWidth(" ");
-        word = "";
-      }
-      if (ch == '\n') {
-        curX = x;
-        lineIdx++;
-      }
-    } else {
-      word += ch;
-    }
-  }
-}
-
-void drawVoiceAiScreen() {
-  ensureUiCanvas();
-  uiCanvas.fillScreen(UI_BG);
-
-  // ============================================================
-  // TELA DE RESPOSTA DA IA (DOUBLE BUFFERING 64KB PSRAM, 60 FPS)
-  // ============================================================
-  if (voiceState == VoiceState::RESULT) {
-    uiCanvas.fillRect(0, 0, 240, 20, UI_BG);
-
-    // Bolinha de Status
-    uint16_t dotCol = UI_GREEN;
-    if (!voiceBridgeConnected) dotCol = UI_RED;
-    else if (voxSpeechDetected) dotCol = UI_YELLOW;
-    uiCanvas.fillCircle(10, 10, 4, dotCol);
-
-    uiCanvas.setTextDatum(middle_left);
-    uiCanvas.setTextSize(1);
-    uiCanvas.setTextColor(dotCol, UI_BG);
-    String topTitle = "RESPOSTA • " + (voiceActiveAgent.length() > 0 ? voiceActiveAgent : "IA");
-    if (voxSpeechDetected) topTitle += " [OUVINDO...]";
-    uiCanvas.drawString(topTitle, 19, 10);
-
-    uiCanvas.setTextDatum(middle_right);
-    uiCanvas.setTextColor(UI_MUTED, UI_BG);
-    int totalL = countWrappedTextLines(224, voiceResultBody);
-    if (totalL > 5) {
-      char pgBuf[16];
-      int curPg = (voiceScrollLine / 4) + 1;
-      int totPg = ((totalL + 3) / 4);
-      snprintf(pgBuf, sizeof(pgBuf), "[%d/%d] ▲[C] ▼[B]", curPg, totPg);
-      uiCanvas.drawString(pgBuf, 234, 10);
-    } else {
-      uiCanvas.drawString("▲[C] ▼[B]", 234, 10);
-    }
-
-    uiCanvas.drawFastHLine(0, 20, 240, UI_BORDER);
-
-    // Painel Central Liberado (x: 4, y: 22, w: 232, h: 96)
-    uiCanvas.fillRoundRect(4, 22, 232, 96, 4, UI_PANEL);
-    uiCanvas.drawRoundRect(4, 22, 232, 96, 4, UI_BORDER);
-
-    if (voiceTranscription.length() > 0) {
-      uiCanvas.setTextDatum(top_left);
-      uiCanvas.setTextSize(1);
-      uiCanvas.setTextColor(UI_YELLOW, UI_PANEL);
-      String qStr = "> " + voiceTranscription;
-      if (uiCanvas.textWidth(qStr) > 220) qStr = qStr.substring(0, 32) + "..";
-      uiCanvas.drawString(qStr, 8, 26);
-      uiCanvas.drawFastHLine(8, 38, 224, UI_BORDER);
-
-      drawWrappedTextCanvas(uiCanvas, 8, 42, 224, 6, voiceScrollLine, voiceResultBody, UI_TEXT);
-    } else {
-      drawWrappedTextCanvas(uiCanvas, 8, 26, 224, 7, voiceScrollLine, voiceResultBody, UI_TEXT);
-    }
-
-    // Rodapé no Canvas
-    uiCanvas.fillRoundRect(4, 121, 14, 11, 2, UI_ORANGE);
-    uiCanvas.setTextColor(UI_BG, UI_ORANGE);
-    uiCanvas.setTextDatum(middle_center);
-    uiCanvas.drawString("A", 11, 126);
-    uiCanvas.setTextColor(UI_TEXT, UI_BG);
-    uiCanvas.setTextDatum(middle_left);
-    uiCanvas.drawString("Falar", 21, 126);
-
-    uiCanvas.fillRoundRect(66, 121, 14, 11, 2, UI_CYAN);
-    uiCanvas.setTextColor(UI_BG, UI_CYAN);
-    uiCanvas.setTextDatum(middle_center);
-    uiCanvas.drawString("B", 73, 126);
-    uiCanvas.setTextColor(UI_TEXT, UI_BG);
-    uiCanvas.setTextDatum(middle_left);
-    uiCanvas.drawString("▼ Descer", 83, 126);
-
-    uiCanvas.fillRoundRect(156, 121, 14, 11, 2, UI_MUTED);
-    uiCanvas.setTextColor(UI_BG, UI_MUTED);
-    uiCanvas.setTextDatum(middle_center);
-    uiCanvas.drawString("C", 163, 126);
-    uiCanvas.setTextColor(UI_TEXT, UI_BG);
-    uiCanvas.setTextDatum(middle_left);
-    uiCanvas.drawString(voiceScrollLine > 0 ? "▲ Subir" : "Voltar", 173, 126);
-
-    // Push atômico sem flicker
-    uiCanvas.pushSprite(0, 0);
-    return;
-  }
-
-  // ============================================================
-  // TELAS IDLE, LISTENING E THINKING (LAYOUT FULL-WIDTH CYBER)
-  // ============================================================
-  uiCanvas.fillRect(0, 0, 240, 22, UI_BG);
-  uint16_t dotCol = UI_GREEN;
-  if (!voiceBridgeConnected) dotCol = UI_RED;
-  else if (voxSpeechDetected) dotCol = UI_YELLOW;
-  uiCanvas.fillCircle(10, 11, 4, dotCol);
-
-  uiCanvas.setTextDatum(middle_left);
-  uiCanvas.setTextSize(1);
-  uiCanvas.setTextColor(UI_TEXT, UI_BG);
-  uiCanvas.drawString("AGENTE IA • PC BRIDGE", 20, 11);
-  uiCanvas.drawFastHLine(0, 22, 240, UI_BORDER);
-
-  // Badge do Modo no Topo Direito
-  uint16_t modeCol = (voiceInputMode == VoiceInputMode::ALEXA) ? UI_GREEN : UI_CYAN;
-  const char* modeTxt = (voiceInputMode == VoiceInputMode::ALEXA) ? "ALEXA LIVRE" : "PTT";
-  uiCanvas.fillRoundRect(156, 3, 78, 16, 3, UI_PANEL);
-  uiCanvas.drawRoundRect(156, 3, 78, 16, 3, modeCol);
-  uiCanvas.setTextDatum(middle_center);
-  uiCanvas.setTextSize(1);
-  uiCanvas.setTextColor(modeCol, UI_PANEL);
-  uiCanvas.drawString(modeTxt, 195, 11);
-
-  // Cartão Principal Unificado (x: 4, y: 25, w: 232, h: 93)
-  uiCanvas.fillRoundRect(4, 25, 232, 93, 4, UI_PANEL);
-  uiCanvas.drawRoundRect(4, 25, 232, 93, 4, UI_BORDER);
-
-  if (voiceState == VoiceState::IDLE) {
-    uiCanvas.fillRoundRect(36, 31, 168, 20, 3, UI_PANEL_ALT);
-    uiCanvas.drawRoundRect(36, 31, 168, 20, 3, UI_SELECTED);
-    uiCanvas.setTextDatum(middle_center);
-    uiCanvas.setTextSize(1);
-    uiCanvas.setTextColor(0xFFFF, UI_PANEL_ALT);
-    uiCanvas.drawString("FALE: 'EI M5, [COMANDO]'", 120, 41);
-
-    uiCanvas.setTextDatum(middle_center);
-    uiCanvas.setTextColor(UI_CYAN, UI_PANEL);
-    uiCanvas.drawString("• 'desligue o ar'  • 'volume mais alto'", 120, 60);
-    uiCanvas.drawString("• 'toque jazz no youtube'  • 'que horas'", 120, 74);
-
-    uiCanvas.setTextColor(UI_MUTED, UI_PANEL);
-    uiCanvas.drawString(voiceInputMode == VoiceInputMode::ALEXA ? "[B] Alternar para PTT  •  Microfone Ativo" : "Segure ou aperte [A] para falar", 120, 98);
-
-  } else if (voiceState == VoiceState::LISTENING) {
-    uiCanvas.setTextDatum(middle_center);
-    uiCanvas.setTextSize(1);
-    if (voxSpeechDetected) {
-      uiCanvas.setTextColor(UI_GREEN, UI_PANEL);
-      uiCanvas.drawString("VOZ DETECTADA • GRAVANDO", 120, 35);
-    } else {
-      uiCanvas.setTextColor(UI_CYAN, UI_PANEL);
-      uiCanvas.drawString(voiceInputMode == VoiceInputMode::ALEXA ? "ESCUTANDO • DIGA 'EI M5'..." : "GRAVANDO VOZ...", 120, 35);
-    }
-
-    // Ondas orgânicas de áudio estilo Siri/Alexa (9 barras animadas)
-    constexpr int bXs[] = {48, 64, 80, 96, 112, 128, 144, 160, 176};
-    constexpr int bHs[] = {8, 16, 26, 36, 42, 36, 26, 16, 8};
-    for (int b = 0; b < 9; ++b) {
-      int h = bHs[b] + (int)(sinf((voiceWavePhase + b * 40) * 0.12f) * 12.0f);
-      h = constrain(h, 4, 38);
-      int by = 64 - h / 2;
-      uint16_t bCol = (b == 4) ? 0xFFFF : ((b % 2 == 0) ? UI_CYAN : UI_GREEN);
-      uiCanvas.fillRoundRect(bXs[b], by, 8, h, 2, bCol);
-    }
-
-    uiCanvas.setTextDatum(middle_center);
-    if (voxSpeechDetected && voxSilenceStart > 0) {
-      uint32_t sElapsed = millis() - voxSilenceStart;
-      float sSec = sElapsed / 1000.0f;
-      char cdBuf[32];
-      snprintf(cdBuf, sizeof(cdBuf), "Silencio: %.2fs / 0.6s", sSec);
-      uiCanvas.setTextColor(UI_YELLOW, UI_PANEL);
-      uiCanvas.drawString(cdBuf, 120, 98);
-
-      int cW = constrain((int)((sElapsed * 160) / VOX_SILENCE_COOLDOWN_MS), 0, 160);
-      uiCanvas.drawRoundRect(40, 106, 160, 5, 2, UI_BORDER);
-      uiCanvas.fillRect(40, 106, cW, 5, UI_YELLOW);
-    } else {
-      uiCanvas.setTextColor(UI_MUTED, UI_PANEL);
-      uiCanvas.drawString("Fale com o M5Stick...", 120, 98);
-    }
-
-  } else if (voiceState == VoiceState::THINKING) {
-    uiCanvas.setTextDatum(middle_center);
-    uiCanvas.setTextSize(1);
-    uiCanvas.setTextColor(UI_CYAN, UI_PANEL);
-    uiCanvas.drawString("PROCESSANDO COMANDO NO PC...", 120, 36);
-
-    if (voiceTranscription.length() > 0) {
-      uiCanvas.fillRoundRect(12, 48, 216, 22, 3, UI_PANEL_ALT);
-      uiCanvas.drawRoundRect(12, 48, 216, 22, 3, UI_SELECTED);
-      uiCanvas.setTextColor(UI_YELLOW, UI_PANEL_ALT);
-      String tShown = "\"" + voiceTranscription + "\"";
-      if (uiCanvas.textWidth(tShown) > 200) tShown = tShown.substring(0, 26) + "..\"";
-      uiCanvas.drawString(tShown, 120, 59);
-    }
-
-    int pW = ((millis() / 15) % 160) + 12;
-    uiCanvas.drawRoundRect(36, 78, 168, 6, 2, UI_BORDER);
-    uiCanvas.fillRect(38, 80, min(164, pW), 2, UI_CYAN);
-
-    uiCanvas.setTextColor(UI_MUTED, UI_PANEL);
-    uiCanvas.drawString("Executando automacao / IA...", 120, 98);
-  }
-
-  // Rodapé no Canvas
-  uiCanvas.fillRoundRect(4, 121, 14, 11, 2, UI_ORANGE);
-  uiCanvas.setTextColor(UI_BG, UI_ORANGE);
-  uiCanvas.setTextDatum(middle_center);
-  uiCanvas.drawString("A", 11, 126);
-  uiCanvas.setTextColor(UI_TEXT, UI_BG);
-  uiCanvas.setTextDatum(middle_left);
-  if (voiceState == VoiceState::LISTENING) {
-    uiCanvas.drawString(voiceInputMode == VoiceInputMode::ALEXA ? "Ouvindo" : "Enviar", 21, 126);
-  } else {
-    uiCanvas.drawString("Falar", 21, 126);
-  }
-
-  uiCanvas.fillRoundRect(66, 121, 14, 11, 2, UI_CYAN);
-  uiCanvas.setTextColor(UI_BG, UI_CYAN);
-  uiCanvas.setTextDatum(middle_center);
-  uiCanvas.drawString("B", 73, 126);
-  uiCanvas.setTextColor(UI_TEXT, UI_BG);
-  uiCanvas.setTextDatum(middle_left);
-  uiCanvas.drawString(voiceInputMode == VoiceInputMode::ALEXA ? "Modo: ALEXA" : "Modo: PTT", 83, 126);
-
-  uiCanvas.fillRoundRect(156, 121, 14, 11, 2, UI_MUTED);
-  uiCanvas.setTextColor(UI_BG, UI_MUTED);
-  uiCanvas.setTextDatum(middle_center);
-  uiCanvas.drawString("C", 163, 126);
-  uiCanvas.setTextColor(UI_TEXT, UI_BG);
-  uiCanvas.setTextDatum(middle_left);
-  uiCanvas.drawString("Voltar", 173, 126);
-
-  // Push do frame completo para o LCD físico sem flicker
-  uiCanvas.pushSprite(0, 0);
-}
 
 void processVoiceAiScreen() {
   lastUserActivityAt = millis();
   processVoiceTransport();
 
-  // ATENÇÃO: NÃO HÁ TIMER DE 6 OU 7 SEGUNDOS DERRUBANDO A TELA!
-  // A resposta permanece na tela pelo tempo que o usuário quiser.
+  // A resposta permanece na tela ate o usuario agir (sem auto-dismiss).
 
-  // Botão C: Toque curto -> Rolar para CIMA (em RESULT). Segurar -> Sair para Menu Principal
-  if (buttonC.wasHeld()) {
-    if (voiceMicRecordingActive) {
-      voiceMicRecordingActive = false;
-      M5.Mic.end();
-      M5.Speaker.begin();
-    }
-    voiceState = VoiceState::IDLE;
-    goBack();
+  // ============================================================
+  // MAPA DE BOTOES DO AGENTE IA (igual nos modos ALEXA e PTT)
+  //   A curto          : falar  <->  enviar (toggle; um clique = um evento)
+  //   B curto          : RESULT -> descer | LISTENING -> cancelar | IDLE -> alternar modo
+  //   C curto          : RESULT com rolagem -> subir | senao -> voltar
+  //   B longo / C longo: voltar ao menu
+  // ============================================================
+
+  if (buttonC.wasHeld() || M5.BtnB.wasHold()) {
+    exitVoiceScreen();
     return;
   }
 
   if (buttonC.wasClicked()) {
-    if (voiceState == VoiceState::RESULT) {
-      if (voiceScrollLine >= 2) {
-        voiceScrollLine -= 2;
-        redraw = true;
-        return;
-      } else {
-        voiceScrollLine = 0;
-        if (voiceMicRecordingActive) {
-          voiceMicRecordingActive = false;
-          M5.Mic.end();
-          M5.Speaker.begin();
-        }
-        voiceState = VoiceState::IDLE;
-        goBack();
-        return;
-      }
+    if (voiceState == VoiceState::RESULT && voiceScrollLine > 0) {
+      voiceScrollLine = max(0, voiceScrollLine - 2);
+      redraw = true;
     } else {
-      if (voiceMicRecordingActive) {
-        voiceMicRecordingActive = false;
-        M5.Mic.end();
-        M5.Speaker.begin();
-      }
-      voiceState = VoiceState::IDLE;
-      goBack();
-      return;
+      exitVoiceScreen();
     }
+    return;
   }
 
-  // Botão B: Rolar para BAIXO (em RESULT) ou Alternar Modo ALEXA/PTT
   if (M5.BtnB.wasClicked()) {
     if (voiceState == VoiceState::RESULT) {
       int totalL = countWrappedTextLines(224, voiceResultBody);
-      if (voiceScrollLine + 3 < totalL) {
-        voiceScrollLine += 2;
-      }
+      if (voiceScrollLine + 3 < totalL) voiceScrollLine += 2;
       redraw = true;
-    } else {
+    } else if (voiceState == VoiceState::LISTENING) {
+      cancelVoiceRecording();
+    } else if (voiceState == VoiceState::IDLE) {
       voiceInputMode = (voiceInputMode == VoiceInputMode::ALEXA) ? VoiceInputMode::PTT : VoiceInputMode::ALEXA;
       Preferences prefs;
       if (prefs.begin("m5p_voice", false)) {
@@ -5261,29 +3531,19 @@ void processVoiceAiScreen() {
       if (voiceInputMode == VoiceInputMode::ALEXA) {
         startVoiceRecording();
       } else {
-        voiceMicRecordingActive = false;
-        M5.Mic.end();
-        M5.Speaker.begin();
-        voiceState = VoiceState::IDLE;
+        stopVoiceMic();
         redraw = true;
       }
     }
+    // THINKING: aguardando o PC; B nao faz nada.
   }
 
-  // Botão A: Iniciar gravação manual ou forçar envio
-  if (M5.BtnA.wasPressed() || M5.BtnA.wasClicked()) {
+  // A: um clique inicia, o proximo clique envia. Vale para PTT e ALEXA
+  // (no ALEXA o clique forca o envio sem esperar o silencio).
+  if (M5.BtnA.wasClicked()) {
     if (voiceState == VoiceState::IDLE || voiceState == VoiceState::RESULT) {
       startVoiceRecording();
-    } else if (voiceState == VoiceState::LISTENING) {
-      if (millis() - voiceRecStartTime >= 400) {
-        stopVoiceRecordingAndSend();
-      }
-    }
-  }
-
-  // Modo PTT: segura e solta para falar
-  if (voiceInputMode == VoiceInputMode::PTT && M5.BtnA.wasReleased() && voiceState == VoiceState::LISTENING) {
-    if (millis() - voiceRecStartTime >= 600) {
+    } else if (voiceState == VoiceState::LISTENING && millis() - voiceRecStartTime >= 400) {
       stopVoiceRecordingAndSend();
     }
   }
@@ -5318,6 +3578,7 @@ void processVoiceAiScreen() {
           sumSq += (int64_t)sample * sample;
         }
         int32_t rms = (int32_t)sqrt(sumSq / CHUNK);
+        uiState.voiceLevel = uiState.voiceLevel * 0.55f + 0.45f * ui::clamp01(rms / 2600.0f);
 
         voiceRecordedSamples += CHUNK;
 
@@ -5399,59 +3660,6 @@ void processVoiceAiScreen() {
   }
 }
 
-void drawScreen() {
-  // Double-Buffering Integral (Padrão Bruce / CatHack - 60 FPS sem Flicker / Tearing)
-  ensureUiCanvas();
-  uiCanvas.setRotation(0);
-  uiCanvas.fillScreen(UI_BG);
-
-  switch (screen) {
-    case Screen::MAIN:                drawMain(); break;
-    case Screen::WIFI_MENU:           drawWifiMenu(); break;
-    case Screen::WIFI_SCANNING:       drawWifiScanning(); break;
-    case Screen::WIFI_NETWORKS:       drawWifiNetworks(); break;
-    case Screen::WIFI_KEYBOARD:       break;
-    case Screen::WIFI_CONNECTING:     drawWifiConnecting(); break;
-    case Screen::WIFI_RESULT:         drawWifiResult(); break;
-    case Screen::WIFI_AP_INFO:        drawWifiApInfo(); break;
-    case Screen::WIFI_WEBUI_NETWORK:  drawWifiWebUiNetwork(); break;
-    case Screen::WIFI_SAVED_LIST:     drawWifiSavedList(); break;
-    case Screen::WIFI_SAVED_DETAIL:   drawWifiSavedDetail(); break;
-    case Screen::WIFI_DELETE_CONFIRM: drawWifiDeleteConfirm(); break;
-    case Screen::IR_TYPES:  drawIrTypes(); break;
-    case Screen::TV_LIST:   drawTvList(); break;
-    case Screen::AC_LIST:   drawAcList(); break;
-    case Screen::TV_REMOTE: drawTvRemote(false); break;
-    case Screen::TV_NAV:    drawTvRemote(true); break;
-    case Screen::AC_REMOTE: drawAcRemote(); break;
-    case Screen::TEAM_MENU: drawTeamMenu(); break;
-    case Screen::TEAM_CATTLE_LIMIT: drawCattleLimit(); break;
-    case Screen::TEAM_CATTLE_COUNTER: drawCattleCounter(); break;
-    case Screen::TEAM_CATTLE_RESET_CONFIRM: drawCattleResetConfirm(); break;
-    case Screen::TEAM_TRAIN_COUNT: drawTrainingCount(); break;
-    case Screen::TEAM_TRAIN_SELECT_HORSE: drawTrainingSelectHorse(); break;
-    case Screen::TEAM_TRAIN_ACTIVE: drawTrainingActive(); break;
-    case Screen::TEAM_TRAIN_END_CONFIRM: drawTrainingEndConfirm(); break;
-    case Screen::TEAM_TRAIN_SUMMARY: drawTrainingSummary(); break;
-    case Screen::TEAM_TRAIN_HISTORY: drawTrainingHistory(); break;
-    case Screen::TEAM_TRAIN_HISTORY_DETAIL: drawTrainingHistoryDetail(); break;
-    case Screen::SETTINGS_MENU: drawSettingsMenu(); break;
-    case Screen::SETTINGS_BRIGHTNESS: drawSettingsBrightness(); break;
-    case Screen::SETTINGS_CLOCK: drawSettingsClock(); break;
-    case Screen::SETTINGS_SLEEP: drawSettingsSleep(); break;
-    case Screen::MOUSE:          drawMouseScreen(); break;
-    case Screen::VOICE_AI:       drawVoiceAiScreen(); break;
-  }
-
-  if (screen != Screen::VOICE_AI && screen != Screen::SETTINGS_CLOCK && screen != Screen::MOUSE) {
-    drawFooter();
-  }
-
-  // Push Atômico do Quadro Inteiro para o ST7789 via DMA/SPI (Zero Flickering)
-  M5.Display.setRotation(3);
-  uiCanvas.pushSprite(0, 0);
-  redraw = false;
-}
 
 // ============================================================
 // NAVEGACAO
@@ -5488,7 +3696,7 @@ uint8_t itemCount() {
     case Screen::TEAM_TRAIN_SUMMARY: return trainingHistory[0].horseCount ? trainingHistory[0].horseCount : 1;
     case Screen::TEAM_TRAIN_HISTORY: return MAX_TRAIN_HISTORY;
     case Screen::TEAM_TRAIN_HISTORY_DETAIL: return trainingHistory[trainingHistoryRecord].horseCount ? trainingHistory[trainingHistoryRecord].horseCount : 1;
-    case Screen::SETTINGS_MENU: return 3;
+    case Screen::SETTINGS_MENU: return 4;
     case Screen::SETTINGS_BRIGHTNESS: return 5;
     case Screen::SETTINGS_CLOCK: return 1;
     case Screen::SETTINGS_SLEEP: return 1;
@@ -5504,10 +3712,9 @@ void nextItem() {
     prefs.begin("system", false);
     prefs.putUChar("wf_style", currentWatchfaceStyle);
     prefs.end();
-    if (M5.Speaker.isEnabled()) M5.Speaker.tone(1800, 30);
-    if (currentWatchfaceStyle == 0) showToast("ESTILO: CYBER HUD", 900);
-    else if (currentWatchfaceStyle == 1) showToast("ESTILO: BIG NEON", 900);
-    else showToast("ESTILO: MATRIX TERMINAL", 900);
+    if (currentWatchfaceStyle == 0) showToast("Estilo: Aurora", 900);
+    else if (currentWatchfaceStyle == 1) showToast("Estilo: Minimal", 900);
+    else showToast("Estilo: Painel", 900);
     forceFullRedraw = true;
     redraw = true;
     return;
@@ -5550,10 +3757,9 @@ void previousItem() {
     prefs.begin("system", false);
     prefs.putUChar("wf_style", currentWatchfaceStyle);
     prefs.end();
-    if (M5.Speaker.isEnabled()) M5.Speaker.tone(1800, 30);
-    if (currentWatchfaceStyle == 0) showToast("ESTILO: CYBER HUD", 900);
-    else if (currentWatchfaceStyle == 1) showToast("ESTILO: BIG NEON", 900);
-    else showToast("ESTILO: MATRIX TERMINAL", 900);
+    if (currentWatchfaceStyle == 0) showToast("Estilo: Aurora", 900);
+    else if (currentWatchfaceStyle == 1) showToast("Estilo: Minimal", 900);
+    else showToast("Estilo: Painel", 900);
     forceFullRedraw = true;
     redraw = true;
     return;
@@ -5601,13 +3807,13 @@ void goBack() {
         bleMouse.releaseAll();
       }
       screen = Screen::MAIN;
-      selected = 3;
+      selected = (uint8_t)HomeApp::MOUSE;
       redraw = true;
       return;
 
     case Screen::VOICE_AI:
       screen = Screen::MAIN;
-      selected = 4;
+      selected = (uint8_t)HomeApp::AI;
       redraw = true;
       return;
 
@@ -5617,16 +3823,23 @@ void goBack() {
         selected = 1;
       } else {
         screen = Screen::MAIN;
-        selected = 0;
+        selected = (uint8_t)HomeApp::CLOCK;
       }
       forceFullRedraw = true;
       redraw = true;
       return;
 
     case Screen::WIFI_MENU:
+      screen = Screen::MAIN;
+      selected = (uint8_t)HomeApp::WIFI;
+      redraw = true;
+      return;
+
     case Screen::SETTINGS_MENU:
       screen = Screen::MAIN;
-      break;
+      selected = (uint8_t)HomeApp::SETTINGS;
+      redraw = true;
+      return;
 
     case Screen::WIFI_NETWORKS:
     case Screen::WIFI_RESULT:
@@ -5651,9 +3864,16 @@ void goBack() {
       return;
 
     case Screen::IR_TYPES:
+      screen = Screen::MAIN;
+      selected = (uint8_t)HomeApp::REMOTE;
+      redraw = true;
+      return;
+
     case Screen::TEAM_MENU:
       screen = Screen::MAIN;
-      break;
+      selected = (uint8_t)HomeApp::TEAM;
+      redraw = true;
+      return;
 
     case Screen::TEAM_CATTLE_LIMIT:
     case Screen::TEAM_CATTLE_COUNTER:
@@ -5722,26 +3942,28 @@ void goBack() {
 void executeSelected() {
   switch (screen) {
     case Screen::MAIN:
-      if (selected == 0) {
-        clockReturnToSettings = false;
-        screen = Screen::SETTINGS_CLOCK;
-        forceFullRedraw = true;
+      switch ((HomeApp)(selected % HOME_APP_COUNT)) {
+        case HomeApp::AI:
+          screen = Screen::VOICE_AI;
+          initVoiceAiScreen();
+          break;
+        case HomeApp::REMOTE: screen = Screen::IR_TYPES; break;
+        case HomeApp::TEAM:   screen = Screen::TEAM_MENU; break;
+        case HomeApp::MOUSE:
+          screen = Screen::MOUSE;
+          startBleMouse();
+          resetMouseCalibration();
+          mouseSmoothDx = 0.0f;
+          mouseSmoothDy = 0.0f;
+          break;
+        case HomeApp::WIFI:   screen = Screen::WIFI_MENU; break;
+        case HomeApp::CLOCK:
+          clockReturnToSettings = false;
+          screen = Screen::SETTINGS_CLOCK;
+          forceFullRedraw = true;
+          break;
+        case HomeApp::SETTINGS: screen = Screen::SETTINGS_MENU; break;
       }
-      else if (selected == 1) screen = Screen::IR_TYPES;
-      else if (selected == 2) screen = Screen::WIFI_MENU;
-      else if (selected == 3) {
-        screen = Screen::MOUSE;
-        startBleMouse();
-        resetMouseCalibration();
-        mouseSmoothDx = 0.0f;
-        mouseSmoothDy = 0.0f;
-      }
-      else if (selected == 4) {
-        screen = Screen::VOICE_AI;
-        initVoiceAiScreen();
-      }
-      else if (selected == 5) screen = Screen::TEAM_MENU;
-      else screen = Screen::SETTINGS_MENU;
       selected = 0;
       break;
 
@@ -5869,6 +4091,7 @@ void executeSelected() {
         screen = Screen::TV_NAV;
         selected = 0;
       } else {
+        uiState.grid.press(selected);
         static const TvCommand map[] = {
           TV_POWER, TV_MUTE, TV_VOL_UP, TV_VOL_DOWN,
           TV_CH_UP, TV_CH_DOWN, TV_INPUT
@@ -5882,6 +4105,7 @@ void executeSelected() {
         TV_UP, TV_DOWN, TV_LEFT, TV_RIGHT,
         TV_OK, TV_BACK, TV_HOME, TV_MENU
       };
+      uiState.grid.press(selected);
       sendTvCommand(map[selected]);
       break;
     }
@@ -5949,7 +4173,15 @@ void executeSelected() {
     case Screen::SETTINGS_MENU:
       if (selected == 0) screen = Screen::SETTINGS_BRIGHTNESS;
       else if (selected == 1) { clockReturnToSettings = true; screen = Screen::SETTINGS_CLOCK; forceFullRedraw = true; }
-      else screen = Screen::SETTINGS_SLEEP;
+      else if (selected == 2) screen = Screen::SETTINGS_SLEEP;
+      else {
+        // alterna sons de toque sem sair do menu
+        uiState.soundEnabled = !uiState.soundEnabled;
+        saveSystemSettings();
+        uiConfirm();
+        showToast(uiState.soundEnabled ? "Sons ligados" : "Sons desligados", 900);
+        break;
+      }
       selected = 0;
       break;
 
@@ -5957,7 +4189,7 @@ void executeSelected() {
       saveSystemSettings();
       screen = Screen::SETTINGS_MENU;
       selected = 0;
-      showToast("BRILHO SALVO", 1000);
+      showToast("Brilho salvo", 1000);
       break;
 
     case Screen::SETTINGS_CLOCK:
@@ -5993,6 +4225,7 @@ void executeSelected() {
       break;
 
     case Screen::AC_REMOTE:
+      uiState.grid.press(selected);
       executeAcAction(selected);
       break;
   }
@@ -6009,64 +4242,6 @@ void executeSelected() {
 // BOOT INTRO & HARDWARE DIAGNOSTICS (CYBER OS)
 // ============================================================
 
-void showBootIntro() {
-  auto& d = M5.Display;
-  d.setRotation(3);
-  d.fillScreen(UI_BG);
-
-  // Vinheta sonora futurista de abertura (arpeggio ascendente não-bloqueante)
-  if (M5.Speaker.isEnabled()) {
-    M5.Speaker.tone(880, 45); delay(50);
-    M5.Speaker.tone(1175, 45); delay(50);
-    M5.Speaker.tone(1480, 55); delay(60);
-    M5.Speaker.tone(1760, 110); delay(120);
-  }
-
-  // Moldura Cyber Neon Dupla
-  d.drawRoundRect(2, 2, 236, 131, 5, UI_BORDER);
-  d.drawRoundRect(4, 4, 232, 127, 4, UI_SELECTED);
-
-  // Header do Banner
-  d.fillRoundRect(8, 8, 224, 26, 3, UI_PANEL);
-  d.drawRoundRect(8, 8, 224, 26, 3, UI_CYAN);
-  d.setTextDatum(middle_center);
-  d.setTextSize(2);
-  d.setTextColor(UI_CYAN, UI_PANEL);
-  d.drawString("M5 PERSONAL", 120, 21);
-
-  d.setTextDatum(middle_center);
-  d.setTextSize(1);
-  d.setTextColor(UI_YELLOW, UI_BG);
-  d.drawString("CYBERNETIC OS // PICO-V3-02", 120, 41);
-
-  // Autoteste de Periféricos com indicação visual em tempo real
-  const char* diagTests[] = {
-    "[ OK ] CPU ESP32 @ 240MHz",
-    psramFound() ? "[ OK ] 2MB PSRAM DETECTADA" : "[WARN] PSRAM INTERNA",
-    M5.Imu.isEnabled() ? "[ OK ] IMU 6-EIXOS ATIVO" : "[WARN] IMU EM STANDBY",
-    "[ OK ] MIC SPM1423 I2S DMA",
-    "[ OK ] EMISSOR IR GPIO 19",
-    "[ OK ] RTC & ENERGIA AXP"
-  };
-
-  const int startY = 51;
-  for (int i = 0; i < 6; i++) {
-    d.setTextDatum(middle_left);
-    d.setTextSize(1);
-    bool isOk = strstr(diagTests[i], "[ OK ]") != nullptr;
-    d.setTextColor(isOk ? UI_GREEN : UI_YELLOW, UI_BG);
-    d.drawString(diagTests[i], 22, startY + i * 11);
-    delay(40);
-  }
-
-  // Barra de progresso animada de carregamento
-  d.drawRoundRect(22, 119, 196, 7, 2, UI_BORDER);
-  for (int w = 2; w <= 192; w += 8) {
-    d.fillRect(24, 121, w, 3, UI_CYAN);
-    delay(8);
-  }
-  delay(180);
-}
 
 void setup() {
   Serial.begin(115200);
@@ -6081,9 +4256,11 @@ void setup() {
   updateBatteryState(true);
   M5.Display.setRotation(3);
   M5.Display.setBrightness(153);
-  M5.Display.setTextFont(1);
   M5.Display.setTextWrap(false);
 
+  // Mesmo limiar de "segurar" nos tres botoes (o padrao da M5Unified e 500 ms).
+  M5.BtnA.setHoldThresh(BTN_HOLD_MS);
+  M5.BtnB.setHoldThresh(BTN_HOLD_MS);
   buttonC.begin();
   loadSystemSettings();
   loadWeatherCache();
@@ -6122,6 +4299,8 @@ void setup() {
   Serial.println("Rotacao 3: emissor IR deve ficar para cima.");
 }
 
+static uint32_t uiLastFrameAt = 0;
+
 void loop() {
   if (webServerRunning) webServer.handleClient();
   processWifiConnection();
@@ -6147,7 +4326,7 @@ void loop() {
 
   if (screen == Screen::VOICE_AI) {
     processVoiceAiScreen();
-    if (redraw) drawScreen();
+    if (redraw || (ui::framePending() && millis() - uiLastFrameAt >= 33)) { drawScreen(); uiLastFrameAt = millis(); }
     delay(1);
     return;
   }
@@ -6190,9 +4369,7 @@ void loop() {
           mouseCalibration.add(gx, gy, gz, gravity);
           if (now - mouseUiAt >= 50) {
             mouseUiAt = now;
-            int w = (100 * mouseCalibration.count) / MouseCalibration::target;
-            M5.Display.fillRect(17, 72, w, 4, UI_SELECTED);
-            M5.Display.fillRect(17 + w, 72, 100 - w, 4, UI_BORDER);
+            drawMouseCalibrationBar((100 * mouseCalibration.count) / MouseCalibration::target);
           }
           if (mouseCalibration.ready) {
             mouseBiasGx = mouseCalibration.mean[0];
@@ -6226,12 +4403,13 @@ void loop() {
           } else mouseRemainderX = mouseRemainderY = 0;
           if (now - mouseUiAt >= 50) {
             mouseUiAt = now;
-            updateMouseCrosshair(rx, ry, M5.BtnA.isPressed() || M5.BtnB.isPressed() ? UI_YELLOW : UI_SELECTED);
+            updateMouseCrosshair(rx, ry, M5.BtnA.isPressed() || M5.BtnB.isPressed() ? ui::YELLOW : ui::CYAN);
           }
         }
       }
     }
-    if (redraw) drawScreen();
+    // Sem quadros continuos aqui (latencia do mouse); so a transicao de entrada anima.
+    if (redraw || uiState.transition.active) drawScreen();
     delay(1);
     return;
   }
@@ -6250,18 +4428,23 @@ void loop() {
     }
     if (M5.BtnA.wasReleased() && !teamAHoldTriggered) {
       markSelectedCattle();
+      uiState.bounce.trigger();
       if (M5.Speaker.isEnabled()) M5.Speaker.tone(1800, 30);
     }
     if (M5.BtnB.wasClicked()) {
       nextItem();
       if (M5.Speaker.isEnabled()) M5.Speaker.tone(1200, 20);
     }
-    if (buttonC.wasClicked() || M5.BtnB.wasHold()) {
+    if (buttonC.wasClicked()) {
+      previousItem();
+      if (M5.Speaker.isEnabled()) M5.Speaker.tone(1200, 20);
+    }
+    if (M5.BtnB.wasHold() || buttonC.wasHeld()) {
       screen = Screen::TEAM_MENU;
       selected = 0;
       redraw = true;
     }
-    if (redraw) drawScreen();
+    if (redraw || (ui::framePending() && millis() - uiLastFrameAt >= 33)) { drawScreen(); uiLastFrameAt = millis(); }
     delay(1);
     return;
   }
@@ -6280,6 +4463,7 @@ void loop() {
     }
     if (M5.BtnA.wasReleased() && !teamAHoldTriggered) {
       addTrainingPass();
+      uiState.bounce.trigger();
       if (M5.Speaker.isEnabled()) M5.Speaker.tone(1800, 30);
     }
     if (M5.BtnB.wasClicked()) {
@@ -6295,7 +4479,7 @@ void loop() {
       selected = 1;
       redraw = true;
     }
-    if (redraw) drawScreen();
+    if (redraw || (ui::framePending() && millis() - uiLastFrameAt >= 33)) { drawScreen(); uiLastFrameAt = millis(); }
     delay(1);
     return;
   }
@@ -6303,33 +4487,44 @@ void loop() {
   // Team Penning: CONFIRMACOES (Reset da boiada ou Fim do Treino)
   if (screen == Screen::TEAM_CATTLE_RESET_CONFIRM || screen == Screen::TEAM_TRAIN_END_CONFIRM) {
     if (M5.BtnA.wasClicked()) {
+      uiConfirm();
       executeSelected();
-    } else if (M5.BtnB.wasClicked() || buttonC.wasClicked() || M5.BtnB.wasHold()) {
+    } else if (M5.BtnB.wasClicked() || buttonC.wasClicked() || M5.BtnB.wasHold() || buttonC.wasHeld()) {
+      uiClick();
       goBack();
     }
-    if (redraw) drawScreen();
+    if (redraw || (ui::framePending() && millis() - uiLastFrameAt >= 33)) { drawScreen(); uiLastFrameAt = millis(); }
     delay(1);
     return;
   }
 
-  // B longo mantem o padrao global de voltar.
+  // Regra unica de navegacao (ver cabecalho do arquivo).
   if (M5.BtnB.wasHold()) {
+    uiClick();
     goBack();
   } else if (M5.BtnB.wasClicked()) {
+    uiClick();
     nextItem();
   }
 
-  if (M5.BtnA.wasClicked()) executeSelected();
+  if (M5.BtnA.wasClicked()) {
+    uiConfirm();
+    executeSelected();
+  }
 
   if (buttonC.wasHeld()) {
-    M5.Display.fillScreen(UI_BG);
-    M5.Display.setTextDatum(middle_center);
-    M5.Display.setTextColor(UI_TEXT, UI_BG);
-    M5.Display.drawString("DESLIGANDO...", 120, 67);
-    delay(250);
-    M5.Power.powerOff();
-  } else if (buttonC.wasClicked()) {
     if (screen == Screen::MAIN) {
+      showPowerOff();
+      M5.Power.powerOff();
+    } else {
+      uiClick();
+      goBack();
+    }
+  } else if (buttonC.wasClicked()) {
+    uiClick();
+    // Em listas e ajustes, C curto e o inverso de B curto; onde nao ha nada para
+    // "subir", vira voltar.
+    if (screenUsesPreviousItem()) {
       previousItem();
     } else {
       goBack();
@@ -6377,11 +4572,13 @@ void loop() {
     }
   }
 
-  if (redraw) {
+  // Quadros animados (~30 fps) enquanto houver animacao; imediato quando ha mudanca.
+  if (redraw || (ui::framePending() && millis() - uiLastFrameAt >= 33)) {
     drawScreen();
+    uiLastFrameAt = millis();
   }
 
-  delay(10);
+  delay(redraw || ui::framePending() ? 2 : 10);
 }
 
 

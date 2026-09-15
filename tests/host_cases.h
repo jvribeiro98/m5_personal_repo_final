@@ -20,7 +20,6 @@ int main(){
  reset();wifiConnecting=true;webServer.args={{"index","0"},{"ssid","changed"},{"password","new-password"},{"test","1"}};handleWebApiSaveNetwork();check(wifiEditingSavedIndex==-1 && savedNetworks[0].ssid=="home" && webServer.status==400,"editing while connecting cannot change the active transaction");
  reset();airConditioners[0].state.power=false;samsungAc.sends=0;toggleAcPower();check(samsungAc.sends==1,"Samsung power-on sends one logical state command");
  reset();airConditioners[0].state.power=true;samsungAc.sends=0;toggleAcPower();check(samsungAc.sends==1,"Samsung power-off sends one logical state command");
- reset();wifiSelectedSavedIndex=0;selected=3;drawnBottom=0;drawWifiSavedDetail();check(drawnBottom<=122,"saved-network delete option fits above the footer");
  check(jsonEscape("a\rb\tc")=="a\\rb\\tc","SSID control characters produce valid JSON");
  reset();airConditioners[0].state.temp=16;executeAcAction(0);check(airConditioners[0].state.temp==16,"AC decrement preserves the minimum supported temperature");
  reset();airConditioners[1].state.temp=30;activeAc=1;executeAcAction(1);check(airConditioners[1].state.temp==30,"AC increment preserves the maximum supported temperature");

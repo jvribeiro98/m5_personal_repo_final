@@ -85,5 +85,7 @@ struct FakeDisplay {
  template<class... A>void drawRect(A...){}
  template<class... A>void pushSprite(A...){}
 };
-struct FakeButton{bool clicked=false;bool wasHold(){return false;}bool wasClicked(){return clicked;}};
+struct FakeButton{bool clicked=false;uint32_t holdThresh=500;bool wasHold(){return false;}bool wasClicked(){return clicked;}void setHoldThresh(uint32_t ms){holdThresh=ms;}};
 struct {FakeDisplay Display;FakeButton BtnA{true},BtnB{false};void update(){}} M5;
+// Design system (ui_core.h) fica fora do harness; so o que a logica referencia.
+namespace ui{constexpr uint16_t BLUE=0;inline bool toastActive(){return false;}}
